@@ -105,6 +105,35 @@ project." Ended up testing isolation via direct SQL role-simulation
 instead of real signups — a fine workaround once you know Postgres RLS can
 be tested that way, but not something a newcomer would reach for first.
 
+## 6. `INSERT ... ON CONFLICT DO NOTHING` can itself get blocked by RLS,
+   independent of whether a conflict actually exists
+
+A "create my personal account on first login" bootstrap needs to be safe
+under concurrency (confirmed for real in production — two near-simultaneous
+requests for the same brand-new user, most likely Next.js's own
+double-invocation of a Suspense-streamed dynamic segment, not just a router
+prefetch). The standard fix is `INSERT ... ON CONFLICT DO NOTHING`
+(`supabase-js`'s `.upsert(row, { ignoreDuplicates: true })`) — but this
+failed with the same `new row violates row-level security policy` error as
+issue #3 above, on the very first insert, with no existing row to conflict
+with at all.
+
+Root cause: Postgres's `ON CONFLICT` clause has to probe for a pre-existing
+conflicting row, and that probe is itself subject to the table's RLS SELECT
+policy. Our SELECT policy required existing account membership — which,
+for a first-time user, doesn't exist yet — so the conflict probe got
+rejected by RLS regardless of whether a real conflict existed. The fix was
+adding `or id = auth.uid()` to the SELECT policy (safe here specifically
+because personal-account ids are defined to equal their owning user's id),
+letting a user always see their own not-yet-existing personal account row.
+
+This is a sharp edge: `ON CONFLICT` needing SELECT visibility to function
+is a general Postgres behavior, not Supabase-specific, but it interacts
+with RLS in a way that's easy to not anticipate — "insert this row, ignore
+it if it already exists" reads as a pure write operation, not one that also
+requires read access. Worth calling out explicitly wherever upsert +
+RLS-under-concurrency patterns are documented.
+
 ## What worked well
 
 - `supabase link` + `supabase db push` for cloud migrations was completely
