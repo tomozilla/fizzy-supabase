@@ -40,7 +40,7 @@ export function SignUpForm({
     }
 
     try {
-      const { error } = await supabase.auth.signUp({
+      const { data, error } = await supabase.auth.signUp({
         email,
         password,
         options: {
@@ -48,7 +48,16 @@ export function SignUpForm({
         },
       });
       if (error) throw error;
-      router.push("/auth/sign-up-success");
+      // Email confirmation is off for this project (see supabase/config.toml),
+      // so signUp() returns an active session immediately — no email is ever
+      // sent, and the old "check your email" redirect here was stale
+      // template copy that no longer matched that behavior.
+      if (data.session) {
+        router.push("/boards");
+        router.refresh();
+      } else {
+        router.push("/auth/sign-up-success");
+      }
     } catch (error: unknown) {
       setError(error instanceof Error ? error.message : "An error occurred");
     } finally {
