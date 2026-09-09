@@ -200,6 +200,30 @@ export async function moveCard(cardId: string, boardId: string, newColumnId: str
   revalidatePath(`/boards/${boardId}`);
 }
 
+/**
+ * Bulk position/column update for drag-and-drop reordering — one call
+ * covers both the source and destination columns' final order (dragging
+ * across columns touches both), rather than N separate moveCard calls.
+ */
+export async function reorderCards(
+  boardId: string,
+  updates: { cardId: string; columnId: string; position: number }[],
+) {
+  const supabase = await createClient();
+
+  const { error } = (
+    await Promise.all(
+      updates.map(({ cardId, columnId, position }) =>
+        supabase.from("cards").update({ column_id: columnId, position }).eq("id", cardId),
+      ),
+    )
+  ).find((r) => r.error) ?? {};
+
+  if (error) throw new Error(error.message);
+
+  revalidatePath(`/boards/${boardId}`);
+}
+
 export async function addComment(cardId: string, boardId: string, body: string) {
   const supabase = await createClient();
   const { data: auth } = await supabase.auth.getUser();
