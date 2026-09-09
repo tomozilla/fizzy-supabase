@@ -10,6 +10,15 @@ const compat = new FlatCompat({
 });
 
 const eslintConfig = [
+  {
+    ignores: [
+      ".next/**",
+      "test-results/**",
+      "playwright-report/**",
+      // Deno runtime, not Node/Next — different globals, different rules.
+      "supabase/functions/**",
+    ],
+  },
   ...compat.extends("next/core-web-vitals", "next/typescript"),
 ];
 

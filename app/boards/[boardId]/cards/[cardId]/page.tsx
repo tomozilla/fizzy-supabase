@@ -76,7 +76,7 @@ async function CardPageContent({
     "use server";
     const name = String(formData.get("name") ?? "").trim();
     if (!name) return;
-    await toggleTag(cardId, card!.account_id, name);
+    await toggleTag(cardId, boardId, card!.account_id, name);
   }
 
   return (
@@ -129,7 +129,7 @@ async function CardPageContent({
                 key={m.user_id}
                 action={async () => {
                   "use server";
-                  await toggleAssignment(cardId, m.user_id);
+                  await toggleAssignment(cardId, boardId, m.user_id);
                 }}
               >
                 <button
@@ -150,7 +150,7 @@ async function CardPageContent({
         <form
           action={async () => {
             "use server";
-            if (auth?.user) await toggleWatch(cardId, auth.user.id);
+            if (auth?.user) await toggleWatch(cardId, boardId, auth.user.id);
           }}
         >
           <button type="submit" className="text-xs border rounded px-3 py-1">

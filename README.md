@@ -23,6 +23,9 @@ Rails application.
   with diagrams
 - 📝 **Build notes:** [`FRICTION_LOG.md`](FRICTION_LOG.md) — issues hit
   while building this, and what worked well
+- ✅ **Testing:** [`docs/testing.md`](docs/testing.md) — unit (Vitest),
+  RLS policy tests (pgTAP), and end-to-end (Playwright) against a local
+  Supabase stack
 
 ## Architecture
 

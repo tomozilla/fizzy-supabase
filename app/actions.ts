@@ -3,6 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
+import { nextPosition, slugify, parseMentionHandles, nameMatchesHandle } from "@/lib/kanban";
 
 // Every mutation here relies on RLS to enforce the account boundary — these
 // actions never check "does this user own this board" themselves. That's the
@@ -11,40 +12,65 @@ import { createClient } from "@/lib/supabase/server";
 // membership row simply gets zero rows back (or a policy violation on
 // insert) — the database refuses on their behalf.
 
+async function findMembership(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  userId: string,
+) {
+  const { data } = await supabase
+    .from("account_users")
+    .select("account_id")
+    .eq("user_id", userId)
+    .limit(1)
+    .maybeSingle();
+  return data?.account_id ?? null;
+}
+
 export async function ensurePersonalAccount() {
   const supabase = await createClient();
   const { data: auth } = await supabase.auth.getUser();
   if (!auth?.user) redirect("/auth/login");
+  const userId = auth.user.id;
 
-  const { data: existing } = await supabase
-    .from("account_users")
-    .select("account_id")
-    .eq("user_id", auth.user.id)
-    .limit(1)
-    .maybeSingle();
-
-  if (existing) return existing.account_id;
+  const existing = await findMembership(supabase, userId);
+  if (existing) return existing;
 
   const name = `${auth.user.email?.split("@")[0] ?? "My"}'s Workspace`;
-  const slug = `${name.toLowerCase().replace(/[^a-z0-9]+/g, "-")}-${auth.user.id.slice(0, 8)}`;
-
-  // Generate the id client-side rather than reading it back via `.select()`:
-  // right after this insert, no account_users row exists yet, so the
-  // "Members can view their accounts" SELECT policy would reject the
-  // post-insert re-select PostgREST does for `return=representation` — a
-  // classic RLS chicken-and-egg (caught by testing against the live REST API
-  // directly, not just skimming the SQL). Skipping `.select()` avoids ever
-  // needing to read the row back before membership exists.
-  const accountId = crypto.randomUUID();
+  // Deterministic id (= the user's own id), not a random one: two
+  // near-simultaneous calls for the same brand-new user (e.g. a router
+  // prefetch racing the real navigation — caught this via a genuine race in
+  // the Playwright e2e suite, not a hypothetical) then collide on the
+  // `accounts` primary key instead of silently creating two personal
+  // accounts for one user. Skipping `.select()` on the insert itself avoids
+  // a separate RLS chicken-and-egg: right after this insert, no
+  // account_users row exists yet, so the "members can view their accounts"
+  // SELECT policy would reject the post-insert re-select PostgREST does for
+  // `return=representation`.
+  const accountId = userId;
+  const slug = slugify(name, accountId.slice(0, 8));
 
   const { error } = await supabase.from("accounts").insert({ id: accountId, name, slug });
-  if (error) throw new Error(error.message);
+
+  if (error) {
+    // Most likely: another concurrent call already won this race. Give its
+    // account_users insert a moment to land, then defer to it — only throw
+    // if there's genuinely no membership after retrying.
+    for (let attempt = 0; attempt < 5; attempt++) {
+      const winner = await findMembership(supabase, userId);
+      if (winner) return winner;
+      await new Promise((resolve) => setTimeout(resolve, 150));
+    }
+    throw new Error(error.message);
+  }
 
   const { error: memberError } = await supabase
     .from("account_users")
-    .insert({ account_id: accountId, user_id: auth.user.id, role: "owner" });
+    .insert({ account_id: accountId, user_id: userId, role: "owner" });
 
-  if (memberError) throw new Error(memberError.message);
+  if (memberError) {
+    const winner = await findMembership(supabase, userId);
+    if (winner) return winner;
+    throw new Error(memberError.message);
+  }
 
   return accountId;
 }
@@ -85,11 +111,9 @@ export async function createColumn(boardId: string, accountId: string, name: str
     .order("position", { ascending: false })
     .limit(1);
 
-  const nextPosition = (cols?.[0]?.position ?? -1) + 1;
-
   const { error } = await supabase
     .from("columns")
-    .insert({ board_id: boardId, account_id: accountId, name, position: nextPosition });
+    .insert({ board_id: boardId, account_id: accountId, name, position: nextPosition(cols ?? []) });
 
   if (error) throw new Error(error.message);
   revalidatePath(`/boards/${boardId}`);
@@ -111,8 +135,6 @@ export async function createCard(
     .order("position", { ascending: false })
     .limit(1);
 
-  const nextPosition = (cards?.[0]?.position ?? -1) + 1;
-
   const { data: card, error } = await supabase
     .from("cards")
     .insert({
@@ -120,7 +142,7 @@ export async function createCard(
       column_id: columnId,
       account_id: accountId,
       title,
-      position: nextPosition,
+      position: nextPosition(cards ?? []),
       created_by: auth?.user?.id,
     })
     .select("id")
@@ -151,11 +173,9 @@ export async function moveCard(cardId: string, boardId: string, newColumnId: str
     .order("position", { ascending: false })
     .limit(1);
 
-  const nextPosition = (cards?.[0]?.position ?? -1) + 1;
-
   const { error } = await supabase
     .from("cards")
-    .update({ column_id: newColumnId, position: nextPosition })
+    .update({ column_id: newColumnId, position: nextPosition(cards ?? []) })
     .eq("id", cardId);
 
   if (error) throw new Error(error.message);
@@ -209,8 +229,8 @@ export async function addComment(cardId: string, boardId: string, body: string) 
 
   // Resolve @mentions client-parsed handles to member ids, then let the
   // parse-mentions Edge Function do the (server-trusted) validation + fan-out.
-  const mentionNames = Array.from(body.matchAll(/@(\w+)/g)).map((m) => m[1].toLowerCase());
-  if (mentionNames.length > 0 && comment) {
+  const mentionHandles = parseMentionHandles(body);
+  if (mentionHandles.length > 0 && comment) {
     const { data: members } = await supabase
       .from("account_users")
       .select("user_id, profiles!inner(full_name)")
@@ -219,7 +239,7 @@ export async function addComment(cardId: string, boardId: string, body: string) 
     const mentionedIds = (members ?? [])
       .filter((m) => {
         const fullName = (m.profiles as unknown as { full_name: string | null })?.full_name;
-        return fullName && mentionNames.includes(fullName.toLowerCase().replace(/\s+/g, ""));
+        return mentionHandles.some((h) => nameMatchesHandle(fullName, h));
       })
       .map((m) => m.user_id);
 
@@ -233,7 +253,12 @@ export async function addComment(cardId: string, boardId: string, body: string) 
   revalidatePath(`/boards/${boardId}/cards/${cardId}`);
 }
 
-export async function toggleTag(cardId: string, accountId: string, tagName: string) {
+export async function toggleTag(
+  cardId: string,
+  boardId: string,
+  accountId: string,
+  tagName: string,
+) {
   const supabase = await createClient();
 
   let { data: tag } = await supabase
@@ -265,9 +290,11 @@ export async function toggleTag(cardId: string, accountId: string, tagName: stri
   } else {
     await supabase.from("taggings").insert({ card_id: cardId, tag_id: tag!.id });
   }
+
+  revalidatePath(`/boards/${boardId}/cards/${cardId}`);
 }
 
-export async function toggleAssignment(cardId: string, userId: string) {
+export async function toggleAssignment(cardId: string, boardId: string, userId: string) {
   const supabase = await createClient();
   const { data: auth } = await supabase.auth.getUser();
 
@@ -285,6 +312,8 @@ export async function toggleAssignment(cardId: string, userId: string) {
       .from("assignments")
       .insert({ card_id: cardId, user_id: userId, assigned_by: auth?.user?.id });
   }
+
+  revalidatePath(`/boards/${boardId}/cards/${cardId}`);
 }
 
 export async function addAttachment(
@@ -323,7 +352,7 @@ export async function addAttachment(
   revalidatePath(`/boards/${boardId}/cards/${cardId}`);
 }
 
-export async function toggleWatch(cardId: string, userId: string) {
+export async function toggleWatch(cardId: string, boardId: string, userId: string) {
   const supabase = await createClient();
   const { data: existing } = await supabase
     .from("watches")
@@ -337,4 +366,6 @@ export async function toggleWatch(cardId: string, userId: string) {
   } else {
     await supabase.from("watches").insert({ card_id: cardId, user_id: userId });
   }
+
+  revalidatePath(`/boards/${boardId}/cards/${cardId}`);
 }
