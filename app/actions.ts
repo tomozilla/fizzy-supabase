@@ -368,3 +368,240 @@ export async function toggleWatch(cardId: string, boardId: string, userId: strin
 
   revalidatePath(`/boards/${boardId}/cards/${cardId}`);
 }
+
+// ── Card workflow states ──────────────────────────────────────────────────
+// Fizzy equivalents: Card::Closeable, Card::Golden, Card::NotNow /
+// Card::Postponable, Card::Triageable. Each writes an `events` row so the
+// activity feed and watcher notifications pick it up via the same trigger
+// every other mutation uses.
+
+async function logCardEvent(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  cardId: string,
+  boardId: string,
+  kind: string,
+  data: Record<string, unknown> = {},
+) {
+  const { data: auth } = await supabase.auth.getUser();
+  const { data: card } = await supabase
+    .from("cards")
+    .select("account_id")
+    .eq("id", cardId)
+    .single();
+  if (!card) return;
+
+  await supabase.from("events").insert({
+    account_id: card.account_id,
+    board_id: boardId,
+    card_id: cardId,
+    actor_id: auth?.user?.id,
+    kind,
+    data,
+  });
+}
+
+export async function toggleCardClosed(cardId: string, boardId: string) {
+  const supabase = await createClient();
+  const { data: auth } = await supabase.auth.getUser();
+
+  const { data: card } = await supabase
+    .from("cards")
+    .select("closed_at")
+    .eq("id", cardId)
+    .single();
+  if (!card) throw new Error("Card not found");
+
+  const closing = card.closed_at === null;
+  const { error } = await supabase
+    .from("cards")
+    .update({
+      closed_at: closing ? new Date().toISOString() : null,
+      closed_by: closing ? auth?.user?.id : null,
+    })
+    .eq("id", cardId);
+  if (error) throw new Error(error.message);
+
+  await logCardEvent(supabase, cardId, boardId, closing ? "card.closed" : "card.reopened");
+
+  revalidatePath(`/boards/${boardId}`);
+  revalidatePath(`/boards/${boardId}/cards/${cardId}`);
+}
+
+export async function toggleCardGolden(cardId: string, boardId: string) {
+  const supabase = await createClient();
+  const { data: auth } = await supabase.auth.getUser();
+
+  const { data: card } = await supabase
+    .from("cards")
+    .select("golden_at")
+    .eq("id", cardId)
+    .single();
+  if (!card) throw new Error("Card not found");
+
+  const marking = card.golden_at === null;
+  const { error } = await supabase
+    .from("cards")
+    .update({
+      golden_at: marking ? new Date().toISOString() : null,
+      golden_by: marking ? auth?.user?.id : null,
+    })
+    .eq("id", cardId);
+  if (error) throw new Error(error.message);
+
+  await logCardEvent(supabase, cardId, boardId, marking ? "card.golden" : "card.ungolden");
+
+  revalidatePath(`/boards/${boardId}`);
+  revalidatePath(`/boards/${boardId}/cards/${cardId}`);
+}
+
+/** Snooze a card off the board until `days` from now, or un-snooze if null. */
+export async function postponeCard(cardId: string, boardId: string, days: number | null) {
+  const supabase = await createClient();
+
+  const until =
+    days === null ? null : new Date(Date.now() + days * 24 * 60 * 60 * 1000).toISOString();
+
+  const { error } = await supabase
+    .from("cards")
+    .update({ not_now_until: until })
+    .eq("id", cardId);
+  if (error) throw new Error(error.message);
+
+  await logCardEvent(supabase, cardId, boardId, until ? "card.postponed" : "card.resumed", {
+    until,
+  });
+
+  revalidatePath(`/boards/${boardId}`);
+  revalidatePath(`/boards/${boardId}/cards/${cardId}`);
+}
+
+export async function markCardTriaged(cardId: string, boardId: string) {
+  const supabase = await createClient();
+
+  const { error } = await supabase
+    .from("cards")
+    .update({ triaged_at: new Date().toISOString() })
+    .eq("id", cardId);
+  if (error) throw new Error(error.message);
+
+  await logCardEvent(supabase, cardId, boardId, "card.triaged");
+
+  revalidatePath(`/boards/${boardId}/triage`);
+  revalidatePath(`/boards/${boardId}`);
+}
+
+// ── Steps (per-card checklist) — Fizzy's Card::Multistep / Step ──────────
+export async function addStep(
+  cardId: string,
+  boardId: string,
+  accountId: string,
+  title: string,
+) {
+  const supabase = await createClient();
+
+  const { data: steps } = await supabase
+    .from("steps")
+    .select("position")
+    .eq("card_id", cardId)
+    .order("position", { ascending: false })
+    .limit(1);
+
+  const { error } = await supabase.from("steps").insert({
+    card_id: cardId,
+    account_id: accountId,
+    title,
+    position: nextPosition(steps ?? []),
+  });
+  if (error) throw new Error(error.message);
+
+  revalidatePath(`/boards/${boardId}/cards/${cardId}`);
+}
+
+export async function toggleStep(stepId: string, cardId: string, boardId: string) {
+  const supabase = await createClient();
+  const { data: auth } = await supabase.auth.getUser();
+
+  const { data: step } = await supabase
+    .from("steps")
+    .select("completed_at")
+    .eq("id", stepId)
+    .single();
+  if (!step) throw new Error("Step not found");
+
+  const completing = step.completed_at === null;
+  const { error } = await supabase
+    .from("steps")
+    .update({
+      completed_at: completing ? new Date().toISOString() : null,
+      completed_by: completing ? auth?.user?.id : null,
+    })
+    .eq("id", stepId);
+  if (error) throw new Error(error.message);
+
+  revalidatePath(`/boards/${boardId}/cards/${cardId}`);
+}
+
+export async function deleteStep(stepId: string, cardId: string, boardId: string) {
+  const supabase = await createClient();
+  const { error } = await supabase.from("steps").delete().eq("id", stepId);
+  if (error) throw new Error(error.message);
+  revalidatePath(`/boards/${boardId}/cards/${cardId}`);
+}
+
+// ── Reactions & pins — tables existed since the initial schema but had no
+// application code at all until now. ────────────────────────────────────
+export async function toggleReaction(
+  commentId: string,
+  cardId: string,
+  boardId: string,
+  emoji: string,
+) {
+  const supabase = await createClient();
+  const { data: auth } = await supabase.auth.getUser();
+  if (!auth?.user) throw new Error("Not signed in");
+
+  const { data: existing } = await supabase
+    .from("reactions")
+    .select("id")
+    .eq("comment_id", commentId)
+    .eq("user_id", auth.user.id)
+    .eq("emoji", emoji)
+    .maybeSingle();
+
+  if (existing) {
+    await supabase.from("reactions").delete().eq("id", existing.id);
+  } else {
+    const { error } = await supabase
+      .from("reactions")
+      .insert({ comment_id: commentId, user_id: auth.user.id, emoji });
+    if (error) throw new Error(error.message);
+  }
+
+  revalidatePath(`/boards/${boardId}/cards/${cardId}`);
+}
+
+export async function togglePin(cardId: string, boardId: string) {
+  const supabase = await createClient();
+  const { data: auth } = await supabase.auth.getUser();
+  if (!auth?.user) throw new Error("Not signed in");
+
+  const { data: existing } = await supabase
+    .from("pins")
+    .select("card_id")
+    .eq("card_id", cardId)
+    .eq("user_id", auth.user.id)
+    .maybeSingle();
+
+  if (existing) {
+    await supabase.from("pins").delete().eq("card_id", cardId).eq("user_id", auth.user.id);
+  } else {
+    const { error } = await supabase
+      .from("pins")
+      .insert({ card_id: cardId, user_id: auth.user.id });
+    if (error) throw new Error(error.message);
+  }
+
+  revalidatePath("/boards");
+  revalidatePath(`/boards/${boardId}`);
+  revalidatePath(`/boards/${boardId}/cards/${cardId}`);
+}

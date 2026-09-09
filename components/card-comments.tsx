@@ -15,16 +15,31 @@ type Comment = {
   author_name: string;
 };
 
+type ReactionRow = {
+  id: string;
+  comment_id: string;
+  emoji: string;
+  user_id: string;
+};
+
 export function CardComments({
   cardId,
   boardId,
   initialComments,
   memberNames,
+  reactionRows,
+  currentUserId,
+  emojiChoices,
+  onToggleReaction,
 }: {
   cardId: string;
   boardId: string;
   initialComments: Comment[];
   memberNames: Record<string, string>;
+  reactionRows: ReactionRow[];
+  currentUserId: string | null;
+  emojiChoices: string[];
+  onToggleReaction: (commentId: string, emoji: string) => Promise<void>;
 }) {
   const [comments, setComments] = useState(initialComments);
   const router = useRouter();
@@ -86,12 +101,40 @@ export function CardComments({
   return (
     <div className="flex flex-col gap-3">
       <ul className="flex flex-col gap-2">
-        {comments.map((c) => (
-          <Card key={c.id} className="p-2 text-sm bg-secondary/30 border-secondary">
-            <div className="font-medium text-primary">{c.author_name}</div>
-            <div>{c.body}</div>
-          </Card>
-        ))}
+        {comments.map((c) => {
+          const forComment = reactionRows.filter((r) => r.comment_id === c.id);
+          return (
+            <Card key={c.id} className="p-2 text-sm bg-secondary/30 border-secondary">
+              <div className="font-medium text-primary">{c.author_name}</div>
+              <div>{c.body}</div>
+              <div className="flex flex-wrap gap-1 mt-1.5">
+                {emojiChoices.map((emoji) => {
+                  const hits = forComment.filter((r) => r.emoji === emoji);
+                  const mine = hits.some((r) => r.user_id === currentUserId);
+                  return (
+                    <button
+                      key={emoji}
+                      type="button"
+                      aria-label={`React ${emoji}`}
+                      onClick={async () => {
+                        await onToggleReaction(c.id, emoji);
+                        router.refresh();
+                      }}
+                      className={`text-xs rounded-full border px-2 py-0.5 transition-colors ${
+                        mine
+                          ? "border-primary bg-primary/10 text-primary"
+                          : "border-transparent hover:border-border text-muted-foreground"
+                      }`}
+                    >
+                      {emoji}
+                      {hits.length > 0 && <span className="ml-1">{hits.length}</span>}
+                    </button>
+                  );
+                })}
+              </div>
+            </Card>
+          );
+        })}
         {comments.length === 0 && (
           <p className="text-sm text-muted-foreground">No comments yet.</p>
         )}

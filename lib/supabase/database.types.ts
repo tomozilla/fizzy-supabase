@@ -7,11 +7,6 @@ export type Json =
   | Json[]
 
 export type Database = {
-  // Allows to automatically instantiate createClient with right options
-  // instead of createClient<Database, { PostgrestVersion: 'XX' }>(URL, KEY)
-  __InternalSupabase: {
-    PostgrestVersion: "14.5"
-  }
   graphql_public: {
     Tables: {
       [_ in never]: never
@@ -250,45 +245,60 @@ export type Database = {
           account_id: string
           board_id: string
           closed_at: string | null
+          closed_by: string | null
           color: string | null
           column_id: string
           created_at: string
           created_by: string | null
           description: string | null
+          golden_at: string | null
+          golden_by: string | null
           id: string
+          not_now_until: string | null
           position: number
           search_vector: unknown
           title: string
+          triaged_at: string | null
           updated_at: string
         }
         Insert: {
           account_id: string
           board_id: string
           closed_at?: string | null
+          closed_by?: string | null
           color?: string | null
           column_id: string
           created_at?: string
           created_by?: string | null
           description?: string | null
+          golden_at?: string | null
+          golden_by?: string | null
           id?: string
+          not_now_until?: string | null
           position?: number
           search_vector?: unknown
           title: string
+          triaged_at?: string | null
           updated_at?: string
         }
         Update: {
           account_id?: string
           board_id?: string
           closed_at?: string | null
+          closed_by?: string | null
           color?: string | null
           column_id?: string
           created_at?: string
           created_by?: string | null
           description?: string | null
+          golden_at?: string | null
+          golden_by?: string | null
           id?: string
+          not_now_until?: string | null
           position?: number
           search_vector?: unknown
           title?: string
+          triaged_at?: string | null
           updated_at?: string
         }
         Relationships: [
@@ -307,6 +317,13 @@ export type Database = {
             referencedColumns: ["id"]
           },
           {
+            foreignKeyName: "cards_closed_by_fkey"
+            columns: ["closed_by"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+          {
             foreignKeyName: "cards_column_id_fkey"
             columns: ["column_id"]
             isOneToOne: false
@@ -316,6 +333,13 @@ export type Database = {
           {
             foreignKeyName: "cards_created_by_fkey"
             columns: ["created_by"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "cards_golden_by_fkey"
+            columns: ["golden_by"]
             isOneToOne: false
             referencedRelation: "profiles"
             referencedColumns: ["id"]
@@ -649,6 +673,61 @@ export type Database = {
           },
         ]
       }
+      steps: {
+        Row: {
+          account_id: string
+          card_id: string
+          completed_at: string | null
+          completed_by: string | null
+          created_at: string
+          id: string
+          position: number
+          title: string
+        }
+        Insert: {
+          account_id: string
+          card_id: string
+          completed_at?: string | null
+          completed_by?: string | null
+          created_at?: string
+          id?: string
+          position?: number
+          title: string
+        }
+        Update: {
+          account_id?: string
+          card_id?: string
+          completed_at?: string | null
+          completed_by?: string | null
+          created_at?: string
+          id?: string
+          position?: number
+          title?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "steps_account_id_fkey"
+            columns: ["account_id"]
+            isOneToOne: false
+            referencedRelation: "accounts"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "steps_card_id_fkey"
+            columns: ["card_id"]
+            isOneToOne: false
+            referencedRelation: "cards"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "steps_completed_by_fkey"
+            columns: ["completed_by"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       taggings: {
         Row: {
           card_id: string
@@ -887,3 +966,4 @@ export const Constants = {
     },
   },
 } as const
+

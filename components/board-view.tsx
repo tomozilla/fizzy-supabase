@@ -25,6 +25,7 @@ import { createColumn, createCard, moveCard, reorderCards } from "@/app/actions"
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card as UiCard } from "@/components/ui/card";
+import { cn } from "@/lib/utils";
 
 type Column = { id: string; name: string; position: number };
 type Card = {
@@ -33,12 +34,28 @@ type Card = {
   column_id: string;
   position: number;
   closed_at: string | null;
+  golden_at?: string | null;
+  not_now_until?: string | null;
+  triaged_at?: string | null;
 };
 
-function SortableCard({ card, boardId }: { card: Card; boardId: string }) {
+function SortableCard({
+  card,
+  boardId,
+  pinned,
+}: {
+  card: Card;
+  boardId: string;
+  pinned: boolean;
+}) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: card.id,
   });
+
+  const postponed =
+    card.not_now_until !== null &&
+    card.not_now_until !== undefined &&
+    new Date(card.not_now_until).getTime() > Date.now();
 
   return (
     <li
@@ -47,7 +64,12 @@ function SortableCard({ card, boardId }: { card: Card; boardId: string }) {
       style={{ transform: CSS.Transform.toString(transform), transition }}
     >
       <UiCard
-        className={`p-2 flex items-start gap-2 bg-secondary/40 border-secondary ${isDragging ? "opacity-40" : ""}`}
+        className={cn(
+          "p-2 flex items-start gap-2 bg-secondary/40 border-secondary",
+          isDragging && "opacity-40",
+          card.golden_at && "border-primary/60 bg-primary/5",
+          (card.closed_at || postponed) && "opacity-60",
+        )}
       >
         <button
           {...attributes}
@@ -60,10 +82,18 @@ function SortableCard({ card, boardId }: { card: Card; boardId: string }) {
         </button>
         <Link
           href={`/boards/${boardId}/cards/${card.id}`}
-          className="font-medium hover:text-primary flex-1"
+          className={cn(
+            "font-medium hover:text-primary flex-1",
+            card.closed_at && "line-through text-muted-foreground",
+          )}
         >
           {card.title}
         </Link>
+        <span className="flex items-center gap-0.5 text-xs shrink-0">
+          {card.golden_at && <span title="Golden card">⭐</span>}
+          {pinned && <span title="Pinned">📌</span>}
+          {postponed && <span title="Postponed">💤</span>}
+        </span>
       </UiCard>
     </li>
   );
@@ -73,11 +103,13 @@ function ColumnDropZone({
   column,
   cards,
   boardId,
+  pinnedCardIds,
   children,
 }: {
   column: Column;
   cards: Card[];
   boardId: string;
+  pinnedCardIds: Set<string>;
   children: React.ReactNode;
 }) {
   const { setNodeRef } = useDroppable({ id: column.id });
@@ -99,7 +131,12 @@ function ColumnDropZone({
       >
         <ul className="flex flex-col gap-2 min-h-[2.5rem]">
           {cards.map((card) => (
-            <SortableCard key={card.id} card={card} boardId={boardId} />
+            <SortableCard
+              key={card.id}
+              card={card}
+              boardId={boardId}
+              pinned={pinnedCardIds.has(card.id)}
+            />
           ))}
         </ul>
       </SortableContext>
@@ -113,13 +150,16 @@ export function BoardView({
   board,
   initialColumns,
   initialCards,
+  pinnedCardIds = [],
 }: {
   board: { id: string; name: string; account_id: string };
   initialColumns: Column[];
   initialCards: Card[];
+  pinnedCardIds?: string[];
 }) {
   const [columns, setColumns] = useState(initialColumns);
   const [cards, setCards] = useState(initialCards);
+  const pinnedSet = useMemo(() => new Set(pinnedCardIds), [pinnedCardIds]);
   const [, startTransition] = useTransition();
   const router = useRouter();
 
@@ -284,6 +324,7 @@ export function BoardView({
                 column={column}
                 cards={cardsByColumn[column.id] ?? []}
                 boardId={board.id}
+                pinnedCardIds={pinnedSet}
               >
                 <form
                   action={async (formData: FormData) => {
