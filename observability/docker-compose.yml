@@ -1,0 +1,182 @@
+# Local CDC + observability stack, sitting alongside the local Supabase stack.
+#
+#   Postgres --(logical replication)--> Debezium --> Kafka --> ClickHouse
+#   Postgres --(pg_stat_*)------------> OTel Collector --\
+#   app      --(OTLP)-----------------> OTel Collector ---> Vector --> ClickHouse
+#   containers --(docker logs)--------> Vector ------------/
+#
+# Everything here is local-only and disposable. Credentials are deliberately
+# trivial: nothing in this file is reachable from outside the machine.
+name: fizzy-obs
+
+networks:
+  obs:
+    driver: bridge
+  # Joined so Debezium and the collector can reach the Supabase Postgres
+  # container by name. Created by `supabase start`, not by this file.
+  supabase:
+    external: true
+    name: supabase_network_fizzy-supabase
+
+volumes:
+  clickhouse-data:
+
+services:
+  # --------------------------------------------------------------- Kafka ---
+  # KRaft mode: single node acting as both broker and controller, no
+  # ZooKeeper. Storage is intentionally *not* on a volume — this is a demo
+  # broker and a clean restart is a feature, not a loss.
+  kafka:
+    image: apache/kafka:4.3.1
+    container_name: obs_kafka
+    networks: [obs]
+    ports:
+      - "29092:29092" # host access for kafka CLI tools / kcat
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093,EXTERNAL://:29092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,EXTERNAL://localhost:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_HEAP_OPTS: -Xms256m -Xmx512m
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 >/dev/null 2>&1",
+        ]
+      interval: 10s
+      timeout: 10s
+      retries: 30
+      start_period: 20s
+
+  # ------------------------------------------------------ Debezium / CDC ---
+  # Kafka Connect with the Debezium Postgres connector. Attached to both
+  # networks: `obs` to reach Kafka, `supabase` to reach the database.
+  connect:
+    image: quay.io/debezium/connect:3.6.2.Final
+    container_name: obs_connect
+    networks: [obs, supabase]
+    ports:
+      - "8083:8083"
+    depends_on:
+      kafka:
+        condition: service_healthy
+    environment:
+      BOOTSTRAP_SERVERS: kafka:9092
+      GROUP_ID: fizzy-connect
+      CONFIG_STORAGE_TOPIC: _connect_configs
+      OFFSET_STORAGE_TOPIC: _connect_offsets
+      STATUS_STORAGE_TOPIC: _connect_statuses
+      CONFIG_STORAGE_REPLICATION_FACTOR: 1
+      OFFSET_STORAGE_REPLICATION_FACTOR: 1
+      STATUS_STORAGE_REPLICATION_FACTOR: 1
+      # Plain JSON without the Connect schema envelope. Schemas-in-every-
+      # message triples the payload and ClickHouse doesn't need them.
+      KEY_CONVERTER: org.apache.kafka.connect.json.JsonConverter
+      VALUE_CONVERTER: org.apache.kafka.connect.json.JsonConverter
+      CONNECT_KEY_CONVERTER_SCHEMAS_ENABLE: "false"
+      CONNECT_VALUE_CONVERTER_SCHEMAS_ENABLE: "false"
+      CONNECT_OFFSET_FLUSH_INTERVAL_MS: "10000"
+      KAFKA_HEAP_OPTS: -Xms256m -Xmx768m
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "curl -sf http://localhost:8083/connectors >/dev/null || exit 1",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+
+  # ---------------------------------------------------------- ClickHouse ---
+  clickhouse:
+    image: clickhouse/clickhouse-server:26.3-alpine
+    container_name: obs_clickhouse
+    networks: [obs]
+    ports:
+      - "8123:8123" # HTTP  (play UI at http://localhost:8123/play)
+      - "19000:9000" # native protocol
+    environment:
+      CLICKHOUSE_USER: default
+      CLICKHOUSE_PASSWORD: clickhouse
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+    ulimits:
+      nofile: { soft: 262144, hard: 262144 }
+    volumes:
+      - clickhouse-data:/var/lib/clickhouse
+      - ./clickhouse/conf/low-mem.xml:/etc/clickhouse-server/config.d/low-mem.xml:ro
+      - ./clickhouse/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      # 127.0.0.1, not localhost: the alpine image resolves localhost to ::1
+      # first and ClickHouse only binds IPv4, so the check fails against a
+      # perfectly healthy server.
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8123/ping || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 60s
+
+  # ------------------------------------------------------ OTel Collector ---
+  # Two jobs: scrape Postgres for metrics, and accept OTLP from the Next.js
+  # app. Everything it collects is forwarded to Vector.
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.160.0
+    container_name: obs_otelcol
+    networks: [obs, supabase]
+    ports:
+      - "4317:4317" # OTLP gRPC  <- your app
+      - "4318:4318" # OTLP HTTP  <- your app
+    depends_on:
+      vector:
+        condition: service_started
+    volumes:
+      - ./otel/collector.yaml:/etc/otelcol-contrib/config.yaml:ro
+    command: ["--config=/etc/otelcol-contrib/config.yaml"]
+
+  # --------------------------------------------------------------- Vector ---
+  # The single writer to ClickHouse. Receives OTLP from the collector,
+  # Prometheus remote-write for metrics, and tails container logs directly.
+  vector:
+    image: timberio/vector:0.58.0-debian
+    container_name: obs_vector
+    networks: [obs]
+    ports:
+      - "8686:8686" # Vector GraphQL API / health
+    volumes:
+      - ./vector/vector.yaml:/etc/vector/vector.yaml:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    environment:
+      VECTOR_LOG: info
+    depends_on:
+      clickhouse:
+        condition: service_healthy
+
+  # ------------------------------------------------------------- Kafka UI ---
+  # Optional: `docker compose --profile ui up -d`
+  kafka-ui:
+    image: kafbat/kafka-ui:v1.4.0
+    container_name: obs_kafka_ui
+    profiles: [ui]
+    networks: [obs]
+    ports:
+      - "8080:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: local
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
+      KAFKA_CLUSTERS_0_KAFKACONNECT_0_NAME: debezium
+      KAFKA_CLUSTERS_0_KAFKACONNECT_0_ADDRESS: http://connect:8083
+      DYNAMIC_CONFIG_ENABLED: "true"
+      JAVA_OPTS: -Xmx384m
+    depends_on:
+      kafka:
+        condition: service_healthy

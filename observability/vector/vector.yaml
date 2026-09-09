@@ -1,0 +1,223 @@
+# Vector — the only process that writes telemetry to ClickHouse.
+#
+#   OTel Collector --OTLP--> otlp source --> logs / metrics / traces
+#   Docker daemon  --logs---> docker source --> logs
+#
+# Vector's `opentelemetry` source fans out into three named outputs
+# (otlp.logs, otlp.metrics, otlp.traces), so all three signals ride one link.
+# The ClickHouse sink only accepts log-shaped events, hence `metric_to_log`
+# on the metrics branch and a `remap` flattening spans on the traces branch.
+
+data_dir: /vector-data-dir
+
+api:
+  enabled: true
+  address: 0.0.0.0:8686
+
+sources:
+  otlp:
+    type: opentelemetry
+    grpc:
+      address: 0.0.0.0:5317
+    http:
+      address: 0.0.0.0:5318
+
+  # Traces arrive here as raw OTLP/JSON rather than through the OTLP source
+  # above: see the note in otel/collector.yaml for why.
+  otlp_traces_json:
+    type: http_server
+    address: 0.0.0.0:5344
+    path: /v1/traces
+    strict_path: false
+
+  # Tails every Supabase container. This is the local stand-in for a hosted
+  # Log Drain: same data shape, none of the per-drain cost.
+  docker:
+    type: docker_logs
+    include_containers:
+      - supabase_
+    exclude_containers:
+      - supabase_vector_ # don't tail the log shipper's own log shipper
+
+transforms:
+  # ------------------------------------------------------------- logs ---
+  logs_from_docker:
+    type: remap
+    inputs: [docker]
+    source: |
+      .source = "docker"
+      .service = to_string(.container_name) ?? "unknown"
+      .severity = "info"
+      .trace_id = ""
+      .span_id = ""
+      .message = to_string(.message) ?? ""
+      .attributes = encode_json({
+        "stream": to_string(.stream) ?? "",
+        "image": to_string(.image) ?? ""
+      })
+
+  logs_from_otlp:
+    type: remap
+    inputs: [otlp.logs]
+    source: |
+      .source = "otlp"
+      .service = to_string(.resources."service.name") ?? "app"
+      .severity = to_string(.severity_text) ?? "info"
+      .trace_id = to_string(.trace_id) ?? ""
+      .span_id = to_string(.span_id) ?? ""
+      .message = to_string(.message) ?? ""
+      .attributes = encode_json(object(.attributes) ?? {})
+
+  # ---------------------------------------------------------- metrics ---
+  metrics_as_logs:
+    type: metric_to_log
+    inputs: [otlp.metrics]
+
+  metrics_shaped:
+    type: remap
+    inputs: [metrics_as_logs]
+    source: |
+      .kind = if exists(.gauge) {
+        "gauge"
+      } else if exists(.counter) {
+        "counter"
+      } else if exists(.aggregated_histogram) {
+        "histogram"
+      } else {
+        "other"
+      }
+
+      v = 0.0
+      if exists(.gauge.value) { v = to_float(.gauge.value) ?? 0.0 }
+      if exists(.counter.value) { v = to_float(.counter.value) ?? 0.0 }
+      if exists(.aggregated_histogram.sum) { v = to_float(.aggregated_histogram.sum) ?? 0.0 }
+      .value = v
+
+      # ClickHouse Map(String, String) — stringify so mixed-type tags can't
+      # fail the insert.
+      tags = {}
+      for_each(object(.tags) ?? {}) -> |k, val| {
+        tags = set!(tags, [k], to_string(val) ?? "")
+      }
+      .tags = tags
+
+      del(.gauge); del(.counter); del(.aggregated_histogram)
+      del(.namespace); del(.interval_ms); del(.summary); del(.distribution)
+
+  # ----------------------------------------------------------- traces ---
+  # One inbound OTLP/JSON request contains many spans, nested three levels
+  # deep. Assigning an array to `.` makes a single remap emit one event per
+  # element, which is how we get one ClickHouse row per span.
+  traces_shaped:
+    type: remap
+    inputs: [otlp_traces_json]
+    source: |
+      # The body arrives as a raw string; parse it here rather than relying on
+      # the source's decoding options, which have changed name across versions.
+      payload = parse_json(.message) ?? {}
+      rows = []
+
+      for_each(array(payload.resourceSpans) ?? []) -> |_i, rs| {
+        svc = "unknown"
+        for_each(array(rs.resource.attributes) ?? []) -> |_j, a| {
+          if (to_string(a.key) ?? "") == "service.name" {
+            svc = to_string(a.value.stringValue) ?? "unknown"
+          }
+        }
+
+        for_each(array(rs.scopeSpans) ?? []) -> |_j, ss| {
+          for_each(array(ss.spans) ?? []) -> |_k, sp| {
+            # OTLP/JSON encodes 64-bit ints as strings, so these really are
+            # nanoseconds here — unlike Vector's native OTLP source, which
+            # hands back already-parsed timestamps.
+            s_ns = to_int(sp.startTimeUnixNano) ?? 0
+            e_ns = to_int(sp.endTimeUnixNano) ?? 0
+
+            attrs = {}
+            for_each(array(sp.attributes) ?? []) -> |_l, a| {
+              k = to_string(a.key) ?? ""
+              v = to_string(a.value.stringValue) ?? to_string(a.value.intValue) ?? to_string(a.value.boolValue) ?? to_string(a.value.doubleValue) ?? ""
+              if k != "" { attrs = set!(attrs, [k], v) }
+            }
+
+            kind_num = to_int(sp.kind) ?? 0
+            kind = if kind_num == 1 { "internal" } else if kind_num == 2 { "server" }
+              else if kind_num == 3 { "client" } else if kind_num == 4 { "producer" }
+              else if kind_num == 5 { "consumer" } else { "unspecified" }
+
+            status_num = to_int(sp.status.code) ?? 0
+            status = if status_num == 1 { "ok" } else if status_num == 2 { "error" } else { "unset" }
+
+            ts = now()
+            if s_ns > 0 { ts = from_unix_timestamp!(s_ns, unit: "nanoseconds") }
+
+            dur = 0
+            if e_ns > s_ns { dur = e_ns - s_ns }
+
+            rows = push(rows, {
+              "timestamp": ts,
+              "trace_id": to_string(sp.traceId) ?? "",
+              "span_id": to_string(sp.spanId) ?? "",
+              "parent_span_id": to_string(sp.parentSpanId) ?? "",
+              "service": svc,
+              "name": to_string(sp.name) ?? "",
+              "kind": kind,
+              "duration_ns": dur,
+              "status_code": status,
+              "attributes": encode_json(attrs)
+            })
+          }
+        }
+      }
+
+      . = rows
+
+sinks:
+  clickhouse_logs:
+    type: clickhouse
+    inputs: [logs_from_docker, logs_from_otlp]
+    endpoint: http://clickhouse:8123
+    database: otel
+    table: logs
+    auth: &ch_auth
+      strategy: basic
+      user: default
+      password: clickhouse
+    skip_unknown_fields: true
+    date_time_best_effort: true
+    batch:
+      timeout_secs: 2
+      max_events: 1000
+
+  clickhouse_metrics:
+    type: clickhouse
+    inputs: [metrics_shaped]
+    endpoint: http://clickhouse:8123
+    database: otel
+    table: metrics
+    auth: *ch_auth
+    skip_unknown_fields: true
+    date_time_best_effort: true
+    batch:
+      timeout_secs: 5
+      max_events: 1000
+
+  clickhouse_traces:
+    type: clickhouse
+    inputs: [traces_shaped]
+    endpoint: http://clickhouse:8123
+    database: otel
+    table: traces
+    auth: *ch_auth
+    skip_unknown_fields: true
+    date_time_best_effort: true
+    batch:
+      timeout_secs: 2
+      max_events: 1000
+
+  # The OTLP source always exposes a `traces` output even though traces reach
+  # us through the HTTP door instead. Consuming it here keeps startup logs
+  # free of a "has no consumers" warning that would otherwise look like a bug.
+  discard_native_traces:
+    type: blackhole
+    inputs: [otlp.traces]

@@ -1,0 +1,11 @@
+<clickhouse>
+    <!-- Docker Desktop on this machine has 8 GB total and the Supabase stack
+         already holds ~2 GB. ClickHouse sizes its caches off total host RAM by
+         default, which is far too greedy here. -->
+    <max_server_memory_usage>1500000000</max_server_memory_usage>
+    <mark_cache_size>268435456</mark_cache_size>
+    <uncompressed_cache_size>0</uncompressed_cache_size>
+    <logger>
+        <level>warning</level>
+    </logger>
+</clickhouse>
