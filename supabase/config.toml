@@ -226,7 +226,12 @@ enable_signup = true
 # addresses. If disabled, only the new email is required to confirm.
 double_confirm_changes = true
 # If enabled, users need to confirm their email address before signing in.
-enable_confirmations = true
+# Off for this demo project: Supabase's built-in (non-SMTP) email service has
+# a very low fixed send quota not meant for real usage, and requiring
+# confirmation means every sign-up depends on it. Turn this back on (and
+# configure a real SMTP provider) before treating this as anything but a
+# personal demo.
+enable_confirmations = false
 # If enabled, users will need to reauthenticate or have logged in recently to change their password.
 secure_password_change = false
 # Controls the minimum amount of time that must pass before sending another signup confirmation or password reset email.
