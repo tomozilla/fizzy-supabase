@@ -12,65 +12,40 @@ import { nextPosition, slugify, parseMentionHandles, nameMatchesHandle } from "@
 // membership row simply gets zero rows back (or a policy violation on
 // insert) — the database refuses on their behalf.
 
-async function findMembership(
-  supabase: Awaited<ReturnType<typeof createClient>>,
-  userId: string,
-) {
-  const { data } = await supabase
-    .from("account_users")
-    .select("account_id")
-    .eq("user_id", userId)
-    .limit(1)
-    .maybeSingle();
-  return data?.account_id ?? null;
-}
-
 export async function ensurePersonalAccount() {
   const supabase = await createClient();
   const { data: auth } = await supabase.auth.getUser();
   if (!auth?.user) redirect("/auth/login");
   const userId = auth.user.id;
 
-  const existing = await findMembership(supabase, userId);
-  if (existing) return existing;
-
   const name = `${auth.user.email?.split("@")[0] ?? "My"}'s Workspace`;
-  // Deterministic id (= the user's own id), not a random one: two
-  // near-simultaneous calls for the same brand-new user (e.g. a router
-  // prefetch racing the real navigation — caught this via a genuine race in
-  // the Playwright e2e suite, not a hypothetical) then collide on the
-  // `accounts` primary key instead of silently creating two personal
-  // accounts for one user. Skipping `.select()` on the insert itself avoids
-  // a separate RLS chicken-and-egg: right after this insert, no
-  // account_users row exists yet, so the "members can view their accounts"
-  // SELECT policy would reject the post-insert re-select PostgREST does for
-  // `return=representation`.
+  // Deterministic id (= the user's own id), not a random one, so this whole
+  // function is idempotent under concurrency by construction rather than by
+  // retrying after a collision. A retry-after-conflict version of this
+  // shipped first and still failed in production — Vercel's own runtime
+  // logs showed a genuine "duplicate key value violates ... accounts_pkey"
+  // reaching the client as an uncaught error, meaning two real concurrent
+  // invocations (likely Next's own double-invocation of a Suspense-streamed
+  // dynamic segment, not just a router prefetch) can race closely enough
+  // that a fixed retry window isn't a reliable fix. `upsert` with
+  // `ignoreDuplicates` compiles to `INSERT ... ON CONFLICT DO NOTHING`,
+  // which is safe under any level of concurrency because there's no
+  // read-then-write gap left to race at all.
   const accountId = userId;
   const slug = slugify(name, accountId.slice(0, 8));
 
-  const { error } = await supabase.from("accounts").insert({ id: accountId, name, slug });
-
-  if (error) {
-    // Most likely: another concurrent call already won this race. Give its
-    // account_users insert a moment to land, then defer to it — only throw
-    // if there's genuinely no membership after retrying.
-    for (let attempt = 0; attempt < 5; attempt++) {
-      const winner = await findMembership(supabase, userId);
-      if (winner) return winner;
-      await new Promise((resolve) => setTimeout(resolve, 150));
-    }
-    throw new Error(error.message);
-  }
+  const { error } = await supabase
+    .from("accounts")
+    .upsert({ id: accountId, name, slug }, { onConflict: "id", ignoreDuplicates: true });
+  if (error) throw new Error(error.message);
 
   const { error: memberError } = await supabase
     .from("account_users")
-    .insert({ account_id: accountId, user_id: userId, role: "owner" });
-
-  if (memberError) {
-    const winner = await findMembership(supabase, userId);
-    if (winner) return winner;
-    throw new Error(memberError.message);
-  }
+    .upsert(
+      { account_id: accountId, user_id: userId, role: "owner" },
+      { onConflict: "account_id,user_id", ignoreDuplicates: true },
+    );
+  if (memberError) throw new Error(memberError.message);
 
   return accountId;
 }

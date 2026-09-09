@@ -6,7 +6,7 @@
 -- project earlier (role-simulation + a real REST API round trip) — codified
 -- here so it's checked on every change instead of by hand.
 begin;
-select plan(9);
+select plan(11);
 
 -- Two users, two accounts, entirely as postgres (bypasses RLS) — this is
 -- the fixture data every test below runs against.
@@ -126,6 +126,37 @@ select throws_ok(
   '42501',
   null,
   'Bob cannot upload into Alice''s account folder'
+);
+
+-- ── Personal-account bootstrap is idempotent under concurrency ──────────
+-- Regression test for a real production bug: ensurePersonalAccount uses
+-- INSERT ... ON CONFLICT DO NOTHING (via supabase-js .upsert with
+-- ignoreDuplicates) so that two near-simultaneous calls for the same
+-- brand-new user (confirmed happening for real — see FRICTION_LOG.md and
+-- the migration this test file's neighbor introduces) both succeed
+-- harmlessly instead of one throwing a duplicate-key error. That only works
+-- if the accounts/account_users SELECT policies let a user see their own
+-- not-yet-existing personal account row — otherwise Postgres's ON CONFLICT
+-- probe itself gets blocked by RLS before any conflict is even found.
+reset role;
+insert into auth.users (id, email) values
+  ('33333333-3333-3333-3333-333333333333', 'carol@example.com');
+
+set local role authenticated;
+set local "request.jwt.claims" to '{"sub":"33333333-3333-3333-3333-333333333333","role":"authenticated"}';
+
+select lives_ok(
+  $$insert into public.accounts (id, name, slug)
+    values ('33333333-3333-3333-3333-333333333333', 'Carol''s Workspace', 'carol-ws')
+    on conflict (id) do nothing$$,
+  'A brand-new user can bootstrap their own personal account (first attempt)'
+);
+
+select lives_ok(
+  $$insert into public.accounts (id, name, slug)
+    values ('33333333-3333-3333-3333-333333333333', 'Carol''s Workspace', 'carol-ws')
+    on conflict (id) do nothing$$,
+  'Repeating the same bootstrap insert is a harmless no-op, not an error'
 );
 
 select * from finish();
