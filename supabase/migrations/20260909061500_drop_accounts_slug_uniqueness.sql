@@ -1,0 +1,21 @@
+-- Fixes another real production crash, same family as the previous
+-- migration: `duplicate key value violates unique constraint
+-- "accounts_slug_key"`.
+--
+-- ensurePersonalAccount's INSERT ... ON CONFLICT (id) DO NOTHING correctly
+-- protects against concurrent duplicate inserts *on the id column* (two
+-- calls for the same brand-new user race-safe by construction). But Postgres
+-- only suppresses conflicts for the specific arbiter named in ON CONFLICT —
+-- `accounts.slug` has its own, separate unique constraint that isn't covered
+-- by that arbiter at all. Under a genuinely concurrent double-invocation (two
+-- transactions, neither able to see the other's not-yet-committed insert),
+-- both can independently believe the slug is available, and whichever
+-- commits second still hits a real, uncaught unique-violation on slug.
+--
+-- `slug` isn't queried anywhere in the app today (grep confirms: write-only,
+-- likely intended for future subdomain-style routing). The actual uniqueness
+-- guarantee we rely on is `accounts.id = <owning user's id>`, which is a
+-- primary key and doesn't have this problem. Rather than adding a second
+-- catch-and-retry path for a second constraint (and risking a third such gap
+-- later), remove the constraint that has no current functional purpose.
+alter table public.accounts drop constraint if exists accounts_slug_key;
