@@ -22,6 +22,9 @@ import {
 import { CSS } from "@dnd-kit/utilities";
 import { createClient } from "@/lib/supabase/client";
 import { createColumn, createCard, moveCard, reorderCards } from "@/app/actions";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Card as UiCard } from "@/components/ui/card";
 
 type Column = { id: string; name: string; position: number };
 type Card = {
@@ -42,23 +45,26 @@ function SortableCard({ card, boardId }: { card: Card; boardId: string }) {
       ref={setNodeRef}
       data-testid={`card-${card.id}`}
       style={{ transform: CSS.Transform.toString(transform), transition }}
-      className={`border rounded p-2 bg-accent/40 flex items-start gap-2 ${isDragging ? "opacity-40" : ""}`}
     >
-      <button
-        {...attributes}
-        {...listeners}
-        type="button"
-        aria-label="Drag to move card"
-        className="touch-none cursor-grab active:cursor-grabbing text-muted-foreground px-1 select-none"
+      <UiCard
+        className={`p-2 flex items-start gap-2 bg-secondary/40 border-secondary ${isDragging ? "opacity-40" : ""}`}
       >
-        ⠿
-      </button>
-      <Link
-        href={`/boards/${boardId}/cards/${card.id}`}
-        className="font-medium hover:underline flex-1"
-      >
-        {card.title}
-      </Link>
+        <button
+          {...attributes}
+          {...listeners}
+          type="button"
+          aria-label="Drag to move card"
+          className="touch-none cursor-grab active:cursor-grabbing text-muted-foreground px-1 select-none"
+        >
+          ⠿
+        </button>
+        <Link
+          href={`/boards/${boardId}/cards/${card.id}`}
+          className="font-medium hover:text-primary flex-1"
+        >
+          {card.title}
+        </Link>
+      </UiCard>
     </li>
   );
 }
@@ -80,9 +86,12 @@ function ColumnDropZone({
     <div
       ref={setNodeRef}
       data-testid={`column-${column.id}`}
-      className="min-w-[280px] border rounded-lg p-3 flex flex-col gap-3"
+      className="min-w-[280px] bg-muted/50 border rounded-lg p-3 flex flex-col gap-3"
     >
-      <h2 className="font-semibold">{column.name}</h2>
+      <h2 className="font-semibold flex items-center gap-2">
+        <span className="h-1.5 w-1.5 rounded-full bg-primary" aria-hidden />
+        {column.name}
+      </h2>
 
       <SortableContext
         items={cards.map((c) => c.id)}
@@ -285,15 +294,10 @@ export function BoardView({
                   }}
                   className="flex flex-col gap-1"
                 >
-                  <input
-                    name="title"
-                    placeholder="New card…"
-                    required
-                    className="border rounded px-2 py-1 text-sm bg-background"
-                  />
-                  <button type="submit" className="text-xs border rounded px-2 py-1">
+                  <Input name="title" placeholder="New card…" required className="text-sm h-8" />
+                  <Button type="submit" size="sm" variant="secondary">
                     Add card
-                  </button>
+                  </Button>
                 </form>
 
                 {/* Accessible fallback for the drag handle above — same
@@ -341,15 +345,10 @@ export function BoardView({
             }}
             className="min-w-[220px] border border-dashed rounded-lg p-3 flex flex-col gap-2 h-fit"
           >
-            <input
-              name="name"
-              placeholder="New column…"
-              required
-              className="border rounded px-2 py-1 text-sm bg-background"
-            />
-            <button type="submit" className="text-xs border rounded px-2 py-1">
+            <Input name="name" placeholder="New column…" required className="text-sm h-8" />
+            <Button type="submit" size="sm" variant="outline">
               Add column
-            </button>
+            </Button>
           </form>
         </div>
       </DndContext>

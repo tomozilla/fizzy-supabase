@@ -4,6 +4,9 @@ import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import { addComment } from "@/app/actions";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Card } from "@/components/ui/card";
 
 type Comment = {
   id: string;
@@ -84,10 +87,10 @@ export function CardComments({
     <div className="flex flex-col gap-3">
       <ul className="flex flex-col gap-2">
         {comments.map((c) => (
-          <li key={c.id} className="border rounded p-2 text-sm">
-            <div className="font-medium">{c.author_name}</div>
+          <Card key={c.id} className="p-2 text-sm bg-secondary/30 border-secondary">
+            <div className="font-medium text-primary">{c.author_name}</div>
             <div>{c.body}</div>
-          </li>
+          </Card>
         ))}
         {comments.length === 0 && (
           <p className="text-sm text-muted-foreground">No comments yet.</p>
@@ -106,15 +109,15 @@ export function CardComments({
         }}
         className="flex gap-2"
       >
-        <input
+        <Input
           name="body"
           placeholder="Write a comment… (@name to mention)"
           required
-          className="border rounded px-2 py-1 text-sm flex-1 bg-background"
+          className="text-sm flex-1"
         />
-        <button type="submit" className="text-xs border rounded px-3 py-1">
+        <Button type="submit" size="sm" variant="secondary">
           Comment
-        </button>
+        </Button>
       </form>
     </div>
   );

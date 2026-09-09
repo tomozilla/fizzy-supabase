@@ -2,6 +2,9 @@ import { Suspense } from "react";
 import { createClient } from "@/lib/supabase/server";
 import { ensurePersonalAccount, createBoard } from "@/app/actions";
 import Link from "next/link";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Card } from "@/components/ui/card";
 
 export default function BoardsPage() {
   return (
@@ -42,25 +45,17 @@ async function BoardsPageContent() {
       </div>
 
       <form action={createBoardAction} className="flex gap-2">
-        <input
-          name="name"
-          placeholder="New board name…"
-          required
-          className="border rounded px-3 py-2 flex-1 bg-background"
-        />
-        <button type="submit" className="border rounded px-4 py-2 font-medium">
-          Create board
-        </button>
+        <Input name="name" placeholder="New board name…" required className="flex-1" />
+        <Button type="submit">Create board</Button>
       </form>
 
       <ul className="flex flex-col gap-2">
         {(boards ?? []).map((board) => (
           <li key={board.id}>
-            <Link
-              href={`/boards/${board.id}`}
-              className="block border rounded px-4 py-3 hover:bg-accent transition-colors"
-            >
-              <span className="font-medium">{board.name}</span>
+            <Link href={`/boards/${board.id}`}>
+              <Card className="px-4 py-3 hover:border-primary/50 hover:shadow-md transition-all">
+                <span className="font-medium">{board.name}</span>
+              </Card>
             </Link>
           </li>
         ))}

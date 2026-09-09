@@ -4,6 +4,10 @@ import { notFound } from "next/navigation";
 import { toggleTag, toggleAssignment, toggleWatch } from "@/app/actions";
 import { CardComments } from "@/components/card-comments";
 import { AttachmentUploader } from "@/components/attachment-uploader";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { badgeVariants } from "@/components/ui/badge";
+import { cn } from "@/lib/utils";
 
 export default function CardPage({
   params,
@@ -82,7 +86,7 @@ async function CardPageContent({
   return (
     <div className="flex-1 w-full flex flex-col gap-6 max-w-2xl">
       <div>
-        <a href={`/boards/${boardId}`} className="text-sm text-muted-foreground hover:underline">
+        <a href={`/boards/${boardId}`} className="text-sm text-muted-foreground hover:text-primary">
           ← Back to board
         </a>
         <h1 className="text-2xl font-bold mt-2">{card.title}</h1>
@@ -97,9 +101,7 @@ async function CardPageContent({
               <input type="hidden" name="name" value={tag.name} />
               <button
                 type="submit"
-                className={`text-xs border rounded-full px-3 py-1 ${
-                  taggedIds.has(tag.id) ? "bg-foreground text-background" : ""
-                }`}
+                className={cn(badgeVariants({ variant: taggedIds.has(tag.id) ? "default" : "outline" }))}
               >
                 {tag.name}
               </button>
@@ -107,14 +109,10 @@ async function CardPageContent({
           ))}
         </div>
         <form action={toggleTagAction} className="flex gap-2">
-          <input
-            name="name"
-            placeholder="New tag…"
-            className="border rounded px-2 py-1 text-sm bg-background"
-          />
-          <button type="submit" className="text-xs border rounded px-2 py-1">
+          <Input name="name" placeholder="New tag…" className="text-sm h-8 max-w-[200px]" />
+          <Button type="submit" size="sm" variant="outline">
             Add tag
-          </button>
+          </Button>
         </form>
       </section>
 
@@ -134,9 +132,9 @@ async function CardPageContent({
               >
                 <button
                   type="submit"
-                  className={`text-xs border rounded-full px-3 py-1 ${
-                    assignedIds.has(m.user_id) ? "bg-foreground text-background" : ""
-                  }`}
+                  className={cn(
+                    badgeVariants({ variant: assignedIds.has(m.user_id) ? "default" : "outline" }),
+                  )}
                 >
                   {fullName}
                 </button>
@@ -153,9 +151,9 @@ async function CardPageContent({
             if (auth?.user) await toggleWatch(cardId, boardId, auth.user.id);
           }}
         >
-          <button type="submit" className="text-xs border rounded px-3 py-1">
+          <Button type="submit" size="sm" variant="ghost">
             👁 Toggle watch (get notified on activity)
-          </button>
+          </Button>
         </form>
       </section>
 
@@ -165,7 +163,7 @@ async function CardPageContent({
           {attachmentsWithUrls.map((a) => (
             <li key={a.id} className="text-sm">
               {a.url ? (
-                <a href={a.url} target="_blank" rel="noreferrer" className="hover:underline">
+                <a href={a.url} target="_blank" rel="noreferrer" className="text-primary hover:underline">
                   📎 {a.filename}
                 </a>
               ) : (

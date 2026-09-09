@@ -71,6 +71,20 @@ flowchart LR
 | Background logic | Supabase Edge Functions (Deno) |
 | Hosting | Vercel |
 
+## Design
+
+Styled with a Supabase-inspired palette rather than the create-next-app
+starter's default black-and-white theme: their signature brand green
+(`hsl(153 60% 53%)`, ~`#3ECF8E`) as the accent/primary color for buttons,
+links, focus rings, and active states, layered over neutral gray/near-black
+surfaces — matching how Supabase's own dashboard uses green as an accent
+against grayscale, rather than a green-tinted background. This is palette
+and tone inspiration only, not any of Supabase's actual design system code
+or trademarked assets. All theme tokens live in `app/globals.css` (light +
+dark mode); UI is built from the same small set of components throughout
+(`components/ui/*` — Button, Card, Input, Badge) rather than one-off styled
+markup per page.
+
 ## What's implemented
 
 | Area | Details |

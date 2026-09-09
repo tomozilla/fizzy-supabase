@@ -56,10 +56,10 @@ export function AttachmentUploader({
             setUploading(false);
           }
         }}
-        className="text-sm"
+        className="text-sm file:mr-3 file:rounded-md file:border-0 file:bg-secondary file:px-3 file:py-1.5 file:text-xs file:font-medium file:text-secondary-foreground hover:file:bg-secondary/80"
       />
       {uploading && <span className="text-xs text-muted-foreground">Uploading…</span>}
-      {error && <span className="text-xs text-red-500">{error}</span>}
+      {error && <span className="text-xs text-destructive">{error}</span>}
     </div>
   );
 }
