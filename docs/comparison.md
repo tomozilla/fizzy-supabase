@@ -290,8 +290,26 @@ at the cost of an extra round trip before the user sees what happened.
 Fizzy's `Card::NotNow`, `Card::Golden`, `Card::Closeable` and
 `Board::Triageable` are Ruby concerns mixed into the model, each with their
 own tables where they need extra data (`card_not_nows`, `card_goldnesses`).
-Here they're plain nullable timestamp columns on `cards`
-(`not_now_until`, `golden_at`, `closed_at`, `triaged_at`) — the state *and*
-when it happened, filterable directly in SQL without a join. Simpler, though
-it does mean the card row grows a column per workflow state rather than
-staying narrow.
+Here they're plain nullable columns on `cards` — the state *and* when it
+happened, filterable directly in SQL without a join:
+
+| State | Columns |
+|---|---|
+| Closed | `closed_at`, `closed_by` |
+| Golden | `golden_at`, `golden_by` |
+| Not now | `not_now_until` |
+| Triaged | `triaged_at` |
+
+Two composite indexes (`cards_not_now_idx`, `cards_triage_idx`, each on
+`board_id` plus the relevant timestamp) keep the board and triage queries off
+a sequential scan. They're not partial, though they arguably should be —
+both columns are null for most rows, and `where not_now_until is not null`
+would index a small fraction of the table instead of all of it.
+
+Simpler, but the cost is real and worth stating precisely: that's six columns
+across four states, because anything tracking *who* acted needs a second
+column alongside the timestamp. Fizzy pays for attribution with a join;
+this pays for it by widening every card row, including the ones that will
+never be golden or closed. At Fizzy's cardinality neither choice matters —
+but the side-table approach is the one that stays flat as workflow states
+accumulate, and this one isn't.
