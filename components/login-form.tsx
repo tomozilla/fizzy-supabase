@@ -31,6 +31,7 @@ export function LoginForm({
   const signUpHref = nextPath
     ? `/auth/sign-up?next=${encodeURIComponent(nextPath)}`
     : "/auth/sign-up";
+  const passkeysEnabled = process.env.NEXT_PUBLIC_PASSKEYS_ENABLED === "true";
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -98,6 +99,38 @@ export function LoginForm({
               <Button type="submit" className="w-full" disabled={isLoading}>
                 {isLoading ? "Logging in..." : "Login"}
               </Button>
+              {/* Passwordless alternative — Supabase Auth runs the WebAuthn
+                  ceremony and returns a session, so there's nothing to
+                  hand-roll here beyond the button. Gated on an explicit flag
+                  because passkeys are a project-level Auth setting that
+                  `supabase config push` doesn't manage yet: showing the
+                  button against a project with them switched off would just
+                  produce an error on click. */}
+              {passkeysEnabled && (
+              <Button
+                type="button"
+                variant="outline"
+                className="w-full"
+                disabled={isLoading}
+                onClick={async () => {
+                  setIsLoading(true);
+                  setError(null);
+                  try {
+                    const supabase = createClient();
+                    const { error } = await supabase.auth.signInWithPasskey();
+                    if (error) throw error;
+                    router.push(nextPath ?? "/boards");
+                    router.refresh();
+                  } catch (err) {
+                    setError(err instanceof Error ? err.message : "Passkey sign-in failed");
+                  } finally {
+                    setIsLoading(false);
+                  }
+                }}
+              >
+                Sign in with a passkey
+              </Button>
+              )}
             </div>
             <div className="mt-4 text-center text-sm">
               Don&apos;t have an account?{" "}

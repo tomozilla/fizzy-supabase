@@ -15,6 +15,8 @@ import { Card } from "@/components/ui/card";
 import { AvatarUploader } from "@/components/avatar-uploader";
 import { CopyableCode } from "@/components/copyable-code";
 import { WorkspaceImporter } from "@/components/workspace-importer";
+import { PushSubscriber } from "@/components/push-subscriber";
+import { PasskeyManager } from "@/components/passkey-manager";
 
 // Combines what Fizzy splits across account admin, user settings and the
 // webhooks screen: your profile, then one block per workspace you belong to
@@ -83,6 +85,26 @@ async function SettingsContent() {
         </form>
         <AvatarUploader userId={userId} currentUrl={profile?.avatar_url ?? null} />
       </section>
+
+      <section className="flex flex-col gap-3">
+        <h2 className="font-semibold">Notifications</h2>
+        <p className="text-sm text-muted-foreground">
+          Get a browser notification when something happens on a card you
+          watch or are mentioned on.
+        </p>
+        <PushSubscriber vapidPublicKey={process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY ?? ""} />
+      </section>
+
+      {process.env.NEXT_PUBLIC_PASSKEYS_ENABLED === "true" && (
+        <section className="flex flex-col gap-3">
+          <h2 className="font-semibold">Passkeys</h2>
+          <p className="text-sm text-muted-foreground">
+            Sign in with Touch ID, Windows Hello or a security key instead of a
+            password.
+          </p>
+          <PasskeyManager />
+        </section>
+      )}
 
       {accounts.map((account) => (
         <Suspense key={account.id} fallback={null}>

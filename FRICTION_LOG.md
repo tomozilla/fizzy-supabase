@@ -134,6 +134,35 @@ it if it already exists" reads as a pure write operation, not one that also
 requires read access. Worth calling out explicitly wherever upsert +
 RLS-under-concurrency patterns are documented.
 
+## 7. `supabase config push` doesn't manage passkey settings
+
+Enabling passkeys locally is a clean two-key config change
+(`[auth.passkey] enabled = true` plus `[auth.webauthn]` rp settings), and it
+works well — Supabase Auth runs the entire WebAuthn ceremony, so the app
+side is one `registerPasskey()` call and one `signInWithPasskey()` call.
+
+But `supabase config diff` against a hosted project doesn't list those keys
+at all: not as a difference, not even in the "declared but not compared"
+list. So the local project has passkeys on and the hosted one doesn't, with
+no way to close that gap through the same migration-style workflow used for
+everything else. Enabling them on a hosted project means going to the
+dashboard, which breaks the otherwise-strong "config lives in the repo"
+story.
+
+Related: `[auth.*]` changes need a full `supabase stop && supabase start` to
+take effect. `supabase db reset` restarts Postgres but leaves the Auth
+container with its old environment, so the setting looks like it silently
+didn't apply. Ten confusing minutes until the container env made it obvious.
+
+## 8. WebAuthn config can't be shared between local and production
+
+`rp_id` has to be a registrable suffix of every origin the app is served
+from, so `localhost` and `fizzy-supabase.vercel.app` genuinely can't share
+one value. `config.toml` supports `env(...)` substitution, which solves it
+cleanly — and pleasantly, a comma-separated env var expands correctly into
+the `rp_origins` *array*, which wasn't obvious from the docs and was worth
+confirming before relying on it.
+
 ## What worked well
 
 - `supabase link` + `supabase db push` for cloud migrations was completely
@@ -146,3 +175,14 @@ RLS-under-concurrency patterns are documented.
   immediately usable types with zero configuration.
 - Realtime (`postgres_changes`) worked first try, no reconnect/backoff code
   needed for a simple case.
+- `pg_net` made outgoing webhooks a ~40 line trigger with no queue, no worker
+  and no extra service — the write returns immediately and the HTTP call
+  happens out of band.
+- Passkeys were the single biggest effort-to-payoff win of the whole
+  project: a config toggle plus two client calls replaced what is an entire
+  hand-rolled `Passkey::Authenticator` in Fizzy, and Chromium's virtual
+  authenticator made it genuinely testable end to end.
+- `supabase test db` (pgTAP) running against a disposable copy of the local
+  stack is a much better story than it sounds on paper — RLS policies are
+  exactly the kind of thing that needs testing at the database level, and
+  this makes that a one-command habit.

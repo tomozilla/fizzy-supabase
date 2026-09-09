@@ -21,6 +21,11 @@ differ in shape.
 | Background/async work | Solid Queue jobs (`Notifier`, `Webhook::Delivery`) | A Deno Edge Function invoked directly from a server action |
 | Search | Sharded MySQL FTS **or** SQLite FTS5, two separate code paths | One native Postgres `tsvector` + GIN index |
 | Primary keys | UUIDv7, base36-encoded to 25 chars | Standard `uuid` (`gen_random_uuid()`) |
+| Team invites | `Account::JoinCode` | Join codes redeemed via a `SECURITY DEFINER` function (a non-member can't read the code row under RLS) |
+| Notifications | `Notifier` subclasses + Solid Queue jobs | Postgres trigger fans out rows; `send-push` Edge Function delivers VAPID web push |
+| Passkeys | Hand-rolled `Passkey::Authenticator` | Supabase Auth runs the whole WebAuthn ceremony |
+| Import/export | Streamed zip archives (`ZipFile`, hundreds of GB) | JSON export/import with id remapping |
+| Activity spikes | `Card::ActivitySpike::Detector`, statistical vs. the card's own baseline | Plain event-count threshold over a 24h window |
 
 ## Architecture, side by side
 
@@ -247,3 +252,46 @@ production; an Edge-Function-triggered-by-Database-Webhook pattern (insert
 a row, Postgres calls the function asynchronously with its own retry) would
 have been the more apples-to-apples comparison to a job queue, at the cost
 of one more moving part (`pg_net` + a webhook secret) to configure.
+
+
+## 6. Later additions
+
+The first pass covered the five headline Supabase features. Filling in the
+rest of Fizzy's surface area surfaced a few more comparisons worth noting.
+
+### Webhooks: job queue vs. `pg_net` trigger
+
+**Fizzy:** `Webhook::Triggerable` enqueues a Solid Queue job per delivery;
+`Webhook::Delivery` records the outcome and `Webhook::DelinquencyTracker`
+backs off endpoints that keep failing.
+
+**fizzy-supabase:** a trigger on `events` calls `net.http_post` for each
+active endpoint and writes a `webhook_deliveries` row. pg_net queues the
+request and returns immediately, so a dead endpoint never blocks the write
+that triggered it — but there's no retry/backoff, which is exactly what
+Fizzy's delinquency tracking exists to provide. Fire-and-forget from the
+database is less code; a job queue is what you actually want once endpoints
+start misbehaving.
+
+### Push: encrypted payloads vs. a bodyless nudge
+
+**Fizzy:** the `web-push` gem encrypts the notification body per RFC 8291 and
+delivers it, so the notification text arrives with the push.
+
+**fizzy-supabase:** `send-push` signs a VAPID JWT with Web Crypto and sends
+a *bodyless* push; the service worker shows a generic "new activity" message
+and links into the inbox, which loads the real content over an authenticated
+request. That skips implementing aes128gcm entirely, and has the side effect
+that no notification content passes through a third-party push service —
+at the cost of an extra round trip before the user sees what happened.
+
+### Triage and card states
+
+Fizzy's `Card::NotNow`, `Card::Golden`, `Card::Closeable` and
+`Board::Triageable` are Ruby concerns mixed into the model, each with their
+own tables where they need extra data (`card_not_nows`, `card_goldnesses`).
+Here they're plain nullable timestamp columns on `cards`
+(`not_now_until`, `golden_at`, `closed_at`, `triaged_at`) — the state *and*
+when it happened, filterable directly in SQL without a join. Simpler, though
+it does mean the card row grows a column per workflow state rather than
+staying narrow.

@@ -2,8 +2,30 @@
 
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
+import { after } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { nextPosition, slugify, parseMentionHandles, nameMatchesHandle } from "@/lib/kanban";
+
+/**
+ * Fire a web push for whoever the event notified, after the response has
+ * already been sent. `after()` matters here: a bare un-awaited promise can
+ * be killed when the serverless invocation finishes, and awaiting it would
+ * put a third-party push service's latency on the user's critical path.
+ */
+function schedulePush(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  eventId: string | undefined,
+) {
+  if (!eventId) return;
+  after(async () => {
+    try {
+      await supabase.functions.invoke("send-push", { body: { event_id: eventId } });
+    } catch {
+      // Push is best-effort: the in-app inbox is the source of truth, so a
+      // dead push service must never surface as a failed user action.
+    }
+  });
+}
 
 // Every mutation here relies on RLS to enforce the account boundary — these
 // actions never check "does this user own this board" themselves. That's the
@@ -218,17 +240,23 @@ export async function addComment(cardId: string, boardId: string, body: string) 
 
   if (error) throw new Error(error.message);
 
-  await supabase.from("events").insert({
-    account_id: card.account_id,
-    // board_id matters: without it the event can't be linked back to a board
-    // in the notification inbox, and board-scoped queries (like activity
-    // spike detection) skip it entirely.
-    board_id: boardId,
-    card_id: cardId,
-    actor_id: auth?.user?.id,
-    kind: "comment.created",
-    data: { comment_id: comment?.id },
-  });
+  const { data: commentEvent } = await supabase
+    .from("events")
+    .insert({
+      account_id: card.account_id,
+      // board_id matters: without it the event can't be linked back to a
+      // board in the notification inbox, and board-scoped queries (like
+      // activity spike detection) skip it entirely.
+      board_id: boardId,
+      card_id: cardId,
+      actor_id: auth?.user?.id,
+      kind: "comment.created",
+      data: { comment_id: comment?.id },
+    })
+    .select("id")
+    .single();
+
+  schedulePush(supabase, commentEvent?.id);
 
   // Resolve @mentions client-parsed handles to member ids, then let the
   // parse-mentions Edge Function do the (server-trusted) validation + fan-out.
@@ -489,6 +517,39 @@ export async function deleteWebhook(webhookId: string) {
   revalidatePath("/settings");
 }
 
+// ── Web push subscriptions (Fizzy's Push::Subscription) ───────────────────
+export async function savePushSubscription(
+  endpoint: string,
+  p256dh: string,
+  authKey: string,
+) {
+  const supabase = await createClient();
+  const { data: auth } = await supabase.auth.getUser();
+  if (!auth?.user) throw new Error("Not signed in");
+
+  // Endpoint is unique: re-subscribing from the same browser updates the
+  // existing row rather than piling up duplicates for one device.
+  const { error } = await supabase
+    .from("push_subscriptions")
+    .upsert(
+      { user_id: auth.user.id, endpoint, p256dh, auth: authKey },
+      { onConflict: "endpoint" },
+    );
+  if (error) throw new Error(error.message);
+
+  revalidatePath("/settings");
+}
+
+export async function deletePushSubscription(endpoint: string) {
+  const supabase = await createClient();
+  const { error } = await supabase
+    .from("push_subscriptions")
+    .delete()
+    .eq("endpoint", endpoint);
+  if (error) throw new Error(error.message);
+  revalidatePath("/settings");
+}
+
 // ── Import (counterpart to /api/export) ───────────────────────────────────
 type ExportPayload = {
   format_version?: number;
@@ -649,14 +710,20 @@ async function logCardEvent(
     .single();
   if (!card) return;
 
-  await supabase.from("events").insert({
-    account_id: card.account_id,
-    board_id: boardId,
-    card_id: cardId,
-    actor_id: auth?.user?.id,
-    kind,
-    data,
-  });
+  const { data: event } = await supabase
+    .from("events")
+    .insert({
+      account_id: card.account_id,
+      board_id: boardId,
+      card_id: cardId,
+      actor_id: auth?.user?.id,
+      kind,
+      data,
+    })
+    .select("id")
+    .single();
+
+  schedulePush(supabase, event?.id);
 }
 
 export async function toggleCardClosed(cardId: string, boardId: string) {

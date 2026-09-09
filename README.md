@@ -41,12 +41,15 @@ flowchart LR
     end
 
     subgraph Supabase["Supabase"]
-        Auth["Auth\n(email/password)"]
-        DB[("Postgres\n+ Row Level Security")]
-        Storage["Storage\n(card-attachments bucket)"]
+        Auth["Auth\n(password + passkeys)"]
+        DB[("Postgres\n+ Row Level Security\n+ triggers, pg_net")]
+        Storage["Storage\n(attachments, avatars)"]
         Realtime["Realtime\n(postgres_changes)"]
-        EdgeFn["Edge Function\n(parse-mentions)"]
+        EdgeFn["Edge Functions\n(parse-mentions, send-push)"]
     end
+
+    Hooks["Your webhook endpoint"]
+    Push["Browser push service"]
 
     UI -->|reads/writes| SA
     SA -->|SQL over RLS| DB
@@ -57,6 +60,8 @@ flowchart LR
     EdgeFn -->|service-role| DB
     UI -->|sign in/up| Auth
     Auth -->|auth.uid()| DB
+    DB -->|pg_net trigger| Hooks
+    EdgeFn -->|VAPID| Push
 ```
 
 ## Stack
@@ -64,11 +69,11 @@ flowchart LR
 | Layer | Technology |
 |---|---|
 | Frontend | Next.js 16 (App Router), TypeScript, Tailwind |
-| Auth | Supabase Auth (email/password) |
+| Auth | Supabase Auth (email/password, passkeys/WebAuthn) |
 | Database | Postgres, enforced with Row Level Security |
 | File storage | Supabase Storage |
 | Live updates | Supabase Realtime (`postgres_changes`) |
-| Background logic | Supabase Edge Functions (Deno) |
+| Background logic | Supabase Edge Functions (Deno), `pg_net` triggers |
 | Hosting | Vercel |
 
 ## Design
@@ -90,12 +95,17 @@ markup per page.
 | Area | Details |
 |---|---|
 | Multi-tenancy | Accounts + membership, enforced entirely via Postgres RLS — no application-level tenant checks anywhere in the code |
-| Boards | Boards → columns → cards, live realtime sync across tabs/users |
-| Collaboration | Comments, tags, assignments, watches, pins, reactions, @mentions |
-| Activity feed | `events` table fanning out to per-user `notifications` via a Postgres trigger |
-| Attachments | Supabase Storage, tenant-isolated by object path + RLS |
-| Search | Native Postgres full-text search on cards/comments (one GIN index, no external search service) |
-| Server logic | A Deno Edge Function (`parse-mentions`) that re-validates @mentions against real account membership before notifying |
+| Teams | Invite links (join codes) redeemed through a `SECURITY DEFINER` function, member roster, leave-workspace, multi-workspace boards/settings |
+| Boards | Boards → columns → cards with drag-and-drop, live realtime sync across tabs/users |
+| Card workflow | Close/reopen, golden cards, postpone ("not now"), checklists (steps), triage inbox, activity-spike flagging |
+| Collaboration | Comments, tags, assignments, watches, pins, emoji reactions, @mentions |
+| Notifications | In-app inbox with unread badge, fed by a Postgres trigger; optional web push via service worker + VAPID |
+| Attachments | Supabase Storage, tenant-isolated by object path + RLS; avatars in a separate public bucket |
+| Search | Native Postgres full-text search on cards/comments (one GIN index, no external search service) + saved searches |
+| Data | JSON export and import (ids remapped so a re-import duplicates rather than clobbers) |
+| Integrations | Outgoing webhooks delivered by a `pg_net` trigger, with a delivery audit trail |
+| Auth | Email/password plus passkeys (WebAuthn) where the project has them enabled |
+| Server logic | Deno Edge Functions: `parse-mentions` (re-validates @mentions server-side) and `send-push` (VAPID-signed web push) |
 
 See `docs/comparison.md` for how each of these compares to Fizzy's actual
 Rails implementation.
@@ -108,7 +118,24 @@ npm run dev
 ```
 
 Requires a `.env.local` with `NEXT_PUBLIC_SUPABASE_URL` and
-`NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` (see `.env.example`).
+`NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` (see `.env.example` for the optional
+push/passkey variables too).
+
+### Web push
+
+Generate a P-256 VAPID keypair, put the public half in
+`NEXT_PUBLIC_VAPID_PUBLIC_KEY` and the private half in the project's Edge
+Function secrets (`supabase secrets set VAPID_PRIVATE_KEY=…`). Pushes are
+sent bodyless — VAPID-authenticated but with no encrypted payload — so the
+service worker shows a generic nudge and the inbox loads the real content.
+
+### Passkeys
+
+Passkeys need `[auth.passkey]` enabled on the project *and*
+`[auth.webauthn]` `rp_id`/`rp_origins` matching the domain being served.
+`supabase config push` doesn't manage these yet, so on a hosted project
+enable them in the dashboard first, then set
+`NEXT_PUBLIC_PASSKEYS_ENABLED=true` so the UI appears.
 
 ## Database changes
 
