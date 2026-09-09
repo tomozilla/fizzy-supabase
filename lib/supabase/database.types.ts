@@ -34,6 +34,48 @@ export type Database = {
   }
   public: {
     Tables: {
+      account_join_codes: {
+        Row: {
+          account_id: string
+          code: string
+          created_at: string
+          created_by: string | null
+          expires_at: string | null
+          id: string
+        }
+        Insert: {
+          account_id: string
+          code: string
+          created_at?: string
+          created_by?: string | null
+          expires_at?: string | null
+          id?: string
+        }
+        Update: {
+          account_id?: string
+          code?: string
+          created_at?: string
+          created_by?: string | null
+          expires_at?: string | null
+          id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "account_join_codes_account_id_fkey"
+            columns: ["account_id"]
+            isOneToOne: false
+            referencedRelation: "accounts"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "account_join_codes_created_by_fkey"
+            columns: ["created_by"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       account_users: {
         Row: {
           account_id: string
@@ -505,6 +547,48 @@ export type Database = {
           },
         ]
       }
+      filters: {
+        Row: {
+          account_id: string
+          created_at: string
+          id: string
+          name: string
+          query: string
+          user_id: string
+        }
+        Insert: {
+          account_id: string
+          created_at?: string
+          id?: string
+          name: string
+          query?: string
+          user_id: string
+        }
+        Update: {
+          account_id?: string
+          created_at?: string
+          id?: string
+          name?: string
+          query?: string
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "filters_account_id_fkey"
+            columns: ["account_id"]
+            isOneToOne: false
+            referencedRelation: "accounts"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "filters_user_id_fkey"
+            columns: ["user_id"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       mentions: {
         Row: {
           comment_id: string
@@ -633,6 +717,41 @@ export type Database = {
           id?: string
         }
         Relationships: []
+      }
+      push_subscriptions: {
+        Row: {
+          auth: string
+          created_at: string
+          endpoint: string
+          id: string
+          p256dh: string
+          user_id: string
+        }
+        Insert: {
+          auth: string
+          created_at?: string
+          endpoint: string
+          id?: string
+          p256dh: string
+          user_id: string
+        }
+        Update: {
+          auth?: string
+          created_at?: string
+          endpoint?: string
+          id?: string
+          p256dh?: string
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "push_subscriptions_user_id_fkey"
+            columns: ["user_id"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+        ]
       }
       reactions: {
         Row: {
@@ -820,6 +939,100 @@ export type Database = {
           },
         ]
       }
+      webhook_deliveries: {
+        Row: {
+          account_id: string
+          delivered_at: string
+          error: string | null
+          event_id: string | null
+          id: string
+          status_code: number | null
+          webhook_id: string
+        }
+        Insert: {
+          account_id: string
+          delivered_at?: string
+          error?: string | null
+          event_id?: string | null
+          id?: string
+          status_code?: number | null
+          webhook_id: string
+        }
+        Update: {
+          account_id?: string
+          delivered_at?: string
+          error?: string | null
+          event_id?: string | null
+          id?: string
+          status_code?: number | null
+          webhook_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "webhook_deliveries_account_id_fkey"
+            columns: ["account_id"]
+            isOneToOne: false
+            referencedRelation: "accounts"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "webhook_deliveries_event_id_fkey"
+            columns: ["event_id"]
+            isOneToOne: false
+            referencedRelation: "events"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "webhook_deliveries_webhook_id_fkey"
+            columns: ["webhook_id"]
+            isOneToOne: false
+            referencedRelation: "webhooks"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      webhooks: {
+        Row: {
+          account_id: string
+          active: boolean
+          created_at: string
+          created_by: string | null
+          id: string
+          url: string
+        }
+        Insert: {
+          account_id: string
+          active?: boolean
+          created_at?: string
+          created_by?: string | null
+          id?: string
+          url: string
+        }
+        Update: {
+          account_id?: string
+          active?: boolean
+          created_at?: string
+          created_by?: string | null
+          id?: string
+          url?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "webhooks_account_id_fkey"
+            columns: ["account_id"]
+            isOneToOne: false
+            referencedRelation: "accounts"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "webhooks_created_by_fkey"
+            columns: ["created_by"]
+            isOneToOne: false
+            referencedRelation: "profiles"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
     }
     Views: {
       [_ in never]: never
@@ -829,6 +1042,7 @@ export type Database = {
         Args: { target_account_id: string }
         Returns: boolean
       }
+      redeem_join_code: { Args: { join_code: string }; Returns: string }
     }
     Enums: {
       account_role: "owner" | "admin" | "member"

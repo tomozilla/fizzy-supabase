@@ -13,7 +13,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { useState } from "react";
 
 export function SignUpForm({
@@ -26,6 +26,10 @@ export function SignUpForm({
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const router = useRouter();
+  const nextPath = useSearchParams().get("next");
+  // See login-form.tsx: preserve the invite destination across the
+  // sign-up ⇄ login switch.
+  const loginHref = nextPath ? `/auth/login?next=${encodeURIComponent(nextPath)}` : "/auth/login";
 
   const handleSignUp = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -53,7 +57,7 @@ export function SignUpForm({
       // sent, and the old "check your email" redirect here was stale
       // template copy that no longer matched that behavior.
       if (data.session) {
-        router.push("/boards");
+        router.push(nextPath ?? "/boards");
         router.refresh();
       } else {
         router.push("/auth/sign-up-success");
@@ -117,7 +121,7 @@ export function SignUpForm({
             </div>
             <div className="mt-4 text-center text-sm">
               Already have an account?{" "}
-              <Link href="/auth/login" className="underline underline-offset-4">
+              <Link href={loginHref} className="underline underline-offset-4">
                 Login
               </Link>
             </div>

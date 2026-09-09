@@ -21,6 +21,10 @@ export default defineConfig({
   fullyParallel: false,
   workers: 1,
   reporter: "list",
+  // The dev server compiles each route on first hit, so a test that walks
+  // through several not-yet-compiled pages (the invite flow crosses five)
+  // can blow the 30s default before doing anything actually slow.
+  timeout: 90_000,
   use: {
     baseURL,
     trace: "retain-on-failure",

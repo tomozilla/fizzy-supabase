@@ -53,9 +53,14 @@ export async function updateSession(request: NextRequest) {
     !request.nextUrl.pathname.startsWith("/login") &&
     !request.nextUrl.pathname.startsWith("/auth")
   ) {
-    // no user, potentially respond by redirecting the user to the login page
+    // No user — send them to log in, but remember where they were headed so
+    // links that land straight on a deep page (an invite link especially)
+    // don't silently dump them on /boards after signing in.
     const url = request.nextUrl.clone();
+    const intended = `${request.nextUrl.pathname}${request.nextUrl.search}`;
     url.pathname = "/auth/login";
+    url.search = "";
+    url.searchParams.set("next", intended);
     return NextResponse.redirect(url);
   }
 

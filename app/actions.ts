@@ -369,6 +369,150 @@ export async function toggleWatch(cardId: string, boardId: string, userId: strin
   revalidatePath(`/boards/${boardId}/cards/${cardId}`);
 }
 
+// ── Team membership (Fizzy's Account::JoinCode) ───────────────────────────
+
+/** Mint a shareable join code for the account. Members only, enforced by RLS. */
+export async function createJoinCode(accountId: string) {
+  const supabase = await createClient();
+  const { data: auth } = await supabase.auth.getUser();
+
+  // Short, URL-safe, unguessable enough for an invite link that can be
+  // revoked at any time from settings.
+  const code = crypto.randomUUID().replace(/-/g, "").slice(0, 20);
+
+  const { error } = await supabase.from("account_join_codes").insert({
+    account_id: accountId,
+    code,
+    created_by: auth?.user?.id,
+    expires_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
+  });
+  if (error) throw new Error(error.message);
+
+  revalidatePath("/settings");
+  return code;
+}
+
+export async function revokeJoinCode(codeId: string) {
+  const supabase = await createClient();
+  const { error } = await supabase.from("account_join_codes").delete().eq("id", codeId);
+  if (error) throw new Error(error.message);
+  revalidatePath("/settings");
+}
+
+/**
+ * Redeem an invite code. Goes through a SECURITY DEFINER function rather
+ * than a direct insert because the joiner isn't a member yet, so RLS can't
+ * let them read the code or write their own membership row — the function
+ * is the trusted boundary that validates the code and adds only the caller.
+ */
+export async function redeemJoinCode(code: string) {
+  const supabase = await createClient();
+  const { data, error } = await supabase.rpc("redeem_join_code", { join_code: code });
+  if (error) throw new Error(error.message);
+
+  revalidatePath("/boards");
+  return data as string | null;
+}
+
+export async function leaveAccount(accountId: string) {
+  const supabase = await createClient();
+  const { data: auth } = await supabase.auth.getUser();
+  if (!auth?.user) return;
+
+  await supabase
+    .from("account_users")
+    .delete()
+    .eq("account_id", accountId)
+    .eq("user_id", auth.user.id);
+
+  revalidatePath("/boards");
+  revalidatePath("/settings");
+}
+
+// ── Profile ───────────────────────────────────────────────────────────────
+export async function updateProfile(fullName: string, avatarUrl?: string | null) {
+  const supabase = await createClient();
+  const { data: auth } = await supabase.auth.getUser();
+  if (!auth?.user) throw new Error("Not signed in");
+
+  const patch: { full_name: string; avatar_url?: string | null } = { full_name: fullName };
+  if (avatarUrl !== undefined) patch.avatar_url = avatarUrl;
+
+  const { error } = await supabase.from("profiles").update(patch).eq("id", auth.user.id);
+  if (error) throw new Error(error.message);
+
+  revalidatePath("/settings");
+}
+
+// ── Saved filters (Fizzy's Filter) ────────────────────────────────────────
+export async function saveFilter(accountId: string, name: string, query: string) {
+  const supabase = await createClient();
+  const { data: auth } = await supabase.auth.getUser();
+  if (!auth?.user) throw new Error("Not signed in");
+
+  const { error } = await supabase
+    .from("filters")
+    .insert({ account_id: accountId, user_id: auth.user.id, name, query });
+  if (error) throw new Error(error.message);
+
+  revalidatePath("/search");
+}
+
+export async function deleteFilter(filterId: string) {
+  const supabase = await createClient();
+  const { error } = await supabase.from("filters").delete().eq("id", filterId);
+  if (error) throw new Error(error.message);
+  revalidatePath("/search");
+}
+
+// ── Outgoing webhooks (Fizzy's Webhook) ───────────────────────────────────
+export async function createWebhook(accountId: string, url: string) {
+  const supabase = await createClient();
+  const { data: auth } = await supabase.auth.getUser();
+
+  const { error } = await supabase
+    .from("webhooks")
+    .insert({ account_id: accountId, url, created_by: auth?.user?.id });
+  if (error) throw new Error(error.message);
+
+  revalidatePath("/settings");
+}
+
+export async function deleteWebhook(webhookId: string) {
+  const supabase = await createClient();
+  const { error } = await supabase.from("webhooks").delete().eq("id", webhookId);
+  if (error) throw new Error(error.message);
+  revalidatePath("/settings");
+}
+
+// ── Notifications ─────────────────────────────────────────────────────────
+// The `notifications` table has been populated by the fan_out_notifications
+// trigger since the initial schema, but nothing ever read from it until now.
+
+export async function markNotificationRead(notificationId: string) {
+  const supabase = await createClient();
+  const { error } = await supabase
+    .from("notifications")
+    .update({ read_at: new Date().toISOString() })
+    .eq("id", notificationId);
+  if (error) throw new Error(error.message);
+  revalidatePath("/notifications");
+}
+
+export async function markAllNotificationsRead() {
+  const supabase = await createClient();
+  const { data: auth } = await supabase.auth.getUser();
+  if (!auth?.user) return;
+
+  const { error } = await supabase
+    .from("notifications")
+    .update({ read_at: new Date().toISOString() })
+    .eq("user_id", auth.user.id)
+    .is("read_at", null);
+  if (error) throw new Error(error.message);
+  revalidatePath("/notifications");
+}
+
 // ── Card workflow states ──────────────────────────────────────────────────
 // Fizzy equivalents: Card::Closeable, Card::Golden, Card::NotNow /
 // Card::Postponable, Card::Triageable. Each writes an `events` row so the

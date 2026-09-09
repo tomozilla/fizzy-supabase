@@ -29,3 +29,40 @@ export function nameMatchesHandle(fullName: string | null | undefined, handle: s
   if (!fullName) return false;
   return fullName.toLowerCase().replace(/\s+/g, "") === handle;
 }
+
+/**
+ * Human-readable sentence for an activity `events` row — the equivalent of
+ * Fizzy's Event::Description, kept as a pure function so the notification
+ * inbox and any future activity feed render events identically.
+ */
+export function describeEvent(kind: string, actorName: string, cardTitle?: string | null): string {
+  const card = cardTitle ? `"${cardTitle}"` : "a card";
+  switch (kind) {
+    case "card.created":
+      return `${actorName} created ${card}`;
+    case "card.moved":
+      return `${actorName} moved ${card}`;
+    case "card.closed":
+      return `${actorName} closed ${card}`;
+    case "card.reopened":
+      return `${actorName} reopened ${card}`;
+    case "card.golden":
+      return `${actorName} marked ${card} as golden`;
+    case "card.ungolden":
+      return `${actorName} removed golden from ${card}`;
+    case "card.postponed":
+      return `${actorName} postponed ${card}`;
+    case "card.resumed":
+      return `${actorName} resumed ${card}`;
+    case "card.triaged":
+      return `${actorName} triaged ${card}`;
+    case "comment.created":
+      return `${actorName} commented on ${card}`;
+    case "comment.mentioned":
+      return `${actorName} mentioned you on ${card}`;
+    case "attachment.added":
+      return `${actorName} attached a file to ${card}`;
+    default:
+      return `${actorName} updated ${card}`;
+  }
+}

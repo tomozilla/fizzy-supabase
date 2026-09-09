@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  describeEvent,
   nameMatchesHandle,
   nextPosition,
   parseMentionHandles,
@@ -45,6 +46,28 @@ describe("parseMentionHandles", () => {
 
   it("returns an empty array when there are no mentions", () => {
     expect(parseMentionHandles("no mentions here")).toEqual([]);
+  });
+});
+
+describe("describeEvent", () => {
+  it("describes a comment event with the card title", () => {
+    expect(describeEvent("comment.created", "Ada", "Fix login")).toBe(
+      'Ada commented on "Fix login"',
+    );
+  });
+
+  it("describes a mention in the second person", () => {
+    expect(describeEvent("comment.mentioned", "Bob", "Ship it")).toBe(
+      'Bob mentioned you on "Ship it"',
+    );
+  });
+
+  it("falls back to a generic phrase for unknown kinds", () => {
+    expect(describeEvent("card.exploded", "Ada", "Fix login")).toBe('Ada updated "Fix login"');
+  });
+
+  it("handles a missing card title", () => {
+    expect(describeEvent("card.created", "Ada", null)).toBe("Ada created a card");
   });
 });
 

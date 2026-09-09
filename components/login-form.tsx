@@ -13,7 +13,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { useState } from "react";
 
 export function LoginForm({
@@ -25,6 +25,12 @@ export function LoginForm({
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const router = useRouter();
+  const nextPath = useSearchParams().get("next");
+  // Carry `next` across to sign-up too, otherwise an invited user who picks
+  // "Sign up" instead of "Login" silently loses the invite they arrived on.
+  const signUpHref = nextPath
+    ? `/auth/sign-up?next=${encodeURIComponent(nextPath)}`
+    : "/auth/sign-up";
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -38,7 +44,7 @@ export function LoginForm({
         password,
       });
       if (error) throw error;
-      router.push("/boards");
+      router.push(nextPath ?? "/boards");
       router.refresh();
     } catch (error: unknown) {
       setError(error instanceof Error ? error.message : "An error occurred");
@@ -96,7 +102,7 @@ export function LoginForm({
             <div className="mt-4 text-center text-sm">
               Don&apos;t have an account?{" "}
               <Link
-                href="/auth/sign-up"
+                href={signUpHref}
                 className="underline underline-offset-4"
               >
                 Sign up

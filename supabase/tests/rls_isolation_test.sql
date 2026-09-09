@@ -6,7 +6,7 @@
 -- project earlier (role-simulation + a real REST API round trip) — codified
 -- here so it's checked on every change instead of by hand.
 begin;
-select plan(11);
+select plan(15);
 
 -- Two users, two accounts, entirely as postgres (bypasses RLS) — this is
 -- the fixture data every test below runs against.
@@ -157,6 +157,78 @@ select lives_ok(
     values ('33333333-3333-3333-3333-333333333333', 'Carol''s Workspace', 'carol-ws')
     on conflict (id) do nothing$$,
   'Repeating the same bootstrap insert is a harmless no-op, not an error'
+);
+
+-- ── Join codes are not readable by non-members ──────────────────────────
+-- The whole invite design rests on this: a stranger must not be able to
+-- enumerate codes, which is why redeeming goes through a SECURITY DEFINER
+-- function instead of a direct read + insert.
+reset role;
+insert into public.account_join_codes (id, account_id, code)
+values (
+  'aa111111-1111-1111-1111-111111111111',
+  'a1111111-1111-1111-1111-111111111111',
+  'secret-invite-code'
+);
+
+set local role authenticated;
+set local "request.jwt.claims" to '{"sub":"22222222-2222-2222-2222-222222222222","role":"authenticated"}';
+
+select is(
+  (select count(*) from public.account_join_codes
+     where account_id = 'a1111111-1111-1111-1111-111111111111')::int,
+  0,
+  'Bob cannot read join codes for an account he is not in'
+);
+
+reset role;
+set local role authenticated;
+set local "request.jwt.claims" to '{"sub":"11111111-1111-1111-1111-111111111111","role":"authenticated"}';
+
+select is(
+  (select count(*) from public.account_join_codes
+     where account_id = 'a1111111-1111-1111-1111-111111111111')::int,
+  1,
+  'Alice can read join codes for her own account'
+);
+
+-- ── Steps inherit the account boundary ──────────────────────────────────
+reset role;
+insert into public.steps (id, card_id, account_id, title)
+values (
+  'ee111111-1111-1111-1111-111111111111',
+  'd1111111-1111-1111-1111-111111111111',
+  'a1111111-1111-1111-1111-111111111111',
+  'Alice''s step'
+);
+
+set local role authenticated;
+set local "request.jwt.claims" to '{"sub":"22222222-2222-2222-2222-222222222222","role":"authenticated"}';
+
+select is(
+  (select count(*) from public.steps
+     where id = 'ee111111-1111-1111-1111-111111111111')::int,
+  0,
+  'Bob cannot see checklist steps on Alice''s card'
+);
+
+-- ── Webhooks are account-scoped too ─────────────────────────────────────
+reset role;
+insert into public.webhooks (id, account_id, url)
+values (
+  'ff111111-1111-1111-1111-111111111111',
+  'a1111111-1111-1111-1111-111111111111',
+  'https://example.com/alice-hook'
+);
+
+set local role authenticated;
+set local "request.jwt.claims" to '{"sub":"22222222-2222-2222-2222-222222222222","role":"authenticated"}';
+
+select is(
+  (select count(*) from public.webhooks
+     where id = 'ff111111-1111-1111-1111-111111111111')::int,
+  0,
+  'Bob cannot see webhooks configured on Alice''s account'
 );
 
 select * from finish();

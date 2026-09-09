@@ -60,7 +60,7 @@ test.afterAll(async () => {
 });
 
 test("sign up lands on /boards with a personal workspace", async () => {
-  await expect(page.getByText("Workspace")).toBeVisible();
+  await expect(page.getByText(/'s Workspace/)).toBeVisible();
 });
 
 test("create a board seeds the three default columns", async () => {
