@@ -163,6 +163,142 @@ cleanly — and pleasantly, a comma-separated env var expands correctly into
 the `rp_origins` *array*, which wasn't obvious from the docs and was worth
 confirming before relying on it.
 
+## 9. ClickHouse's TTL silently deletes rows a bad timestamp put in 1970
+
+Building the local telemetry pipeline, spans reached Vector, the transform
+produced correct output, Vector logged no errors, ClickHouse logged no
+errors — and `select count() from otel.traces` stayed at zero.
+
+The cause was two layers away from the symptom. Vector's OpenTelemetry
+source keeps the OTLP field name `start_time_unix_nano` but has *already*
+decoded the value into a real timestamp. Calling `to_int()` on a timestamp
+in VRL is legal and returns **seconds**, which the transform then handed to
+`from_unix_timestamp(..., unit: "nanoseconds")`. Every span was dated to
+1970-01-01, the table's `TTL … + INTERVAL 7 DAY` considered it long
+expired, and ClickHouse dropped the rows almost immediately after
+accepting the insert.
+
+Nothing in this chain is a bug — a field named `..._unix_nano` holding a
+timestamp is a reasonable convenience, `to_int` on a timestamp is a
+documented coercion, and TTL doing its job is the whole point. But the
+combination produces a pipeline that reports success at every hop and
+stores nothing. What eventually found it was checking
+`system.query_log`, which showed the `INSERT` had genuinely arrived. Any
+TTL'd table is worth a moment's thought about what happens to a row whose
+timestamp is wrong, because "the data silently isn't there" is a much
+worse failure mode than a rejected insert.
+
+## 10. Vector's ClickHouse sink drops trace events without saying so
+
+Vector's `opentelemetry` source exposes three outputs — `otlp.logs`,
+`otlp.metrics`, `otlp.traces` — and `vector validate` happily accepts a
+topology wiring `otlp.traces` through a `remap` into a `clickhouse` sink.
+At runtime, nothing arrives and nothing is logged.
+
+The reason is that Vector has a distinct *trace* event type, and the
+`clickhouse` sink only handles *log* events. A `remap` preserves the event
+type, so the events stay traces all the way to a sink that quietly discards
+them. `metric_to_log` exists for the metrics case; there is no
+`trace_to_log`.
+
+Two things made this expensive to find. `vector validate` passes, because
+`remap` legitimately accepts every event type and the checker can't know
+what will actually flow through it. And the discard is silent — no warning,
+no `component_discarded_events_total` in the logs. Proving the sink was at
+fault meant putting a `console` sink immediately before it, seeing perfect
+output, and still finding no `INSERT` in ClickHouse's `system.query_log`.
+
+The workaround: have the Collector send traces as OTLP **JSON** to a plain
+`http_server` source instead, which produces log events, then unroll
+`resourceSpans[].scopeSpans[].spans[]` in VRL. More code, but it also
+avoids the `to_int` trap from #9 — in raw OTLP JSON the nanosecond fields
+really are integers-as-strings. A sink refusing a type it can't handle,
+loudly, would have saved an hour.
+
+## 11. `docker compose up -d` ignores changed bind-mounted config
+
+Self-inflicted, but worth writing down because it corrupted several
+debugging conclusions before I noticed.
+
+All five services here take their config from bind-mounted files. Editing
+one and running `docker compose up -d <service>` does **nothing**: compose
+diffs the container spec, not the contents of mounted files, sees no
+change, and leaves the old process running. Two of my "that fix didn't
+work" conclusions were actually "that fix never loaded," and one of them
+sent me redesigning a component that was fine.
+
+`docker compose restart <service>` is the right command. The related trap:
+when Vector *does* restart with an invalid VRL program, it logs the
+compile error and keeps running the previous config — which looks identical
+to a config that loaded and silently does nothing. Validating first turns
+that into an immediate, readable error:
+
+```sh
+docker run --rm -v "$PWD/vector/vector.yaml:/etc/vector/vector.yaml:ro" \
+  timberio/vector:0.58.0-debian validate --no-environment /etc/vector/vector.yaml
+```
+
+## 12. Small papercuts in the same stack
+
+Three that each cost a few minutes:
+
+- **`localhost` in a container healthcheck.** ClickHouse binds IPv4 only;
+  the alpine image resolves `localhost` to `::1` first, so
+  `wget http://localhost:8123/ping` fails against a perfectly healthy
+  server. Dependent services then refuse to start on a false negative.
+  `127.0.0.1` fixes it. ClickHouse also needs ~40s to first respond, which
+  is longer than a default `start_period` allows for.
+- **VRL has no `to_timestamp`**, though it has `to_int`, `to_float`,
+  `to_string` and `is_timestamp`. The type-assertion form is `timestamp()`.
+  The error message does suggest `is_timestamp`, which is close enough to
+  be actively misleading.
+- **VRL rejects `if` expressions inside object literals.** `{"a": if x { 1 }
+  else { 2 }}` is a syntax error; the condition has to be hoisted to a
+  variable first. Reasonable, but the parser error points at the following
+  line.
+
+## 13. Debezium's stored offsets outlive the replication slot they point at
+
+Found by testing the teardown path rather than the happy path, which is the
+only reason it was found at all.
+
+`teardown.sh` originally deleted the connector and dropped the replication
+slot — the two things that obviously belong to CDC. Re-running
+`bootstrap.sh` afterwards then reported success at every step: publication
+created, connector registered, task `RUNNING`. Seconds later the task went
+`FAILED` with:
+
+> The connector is trying to read change stream starting at
+> `PostgresOffsetContext [... lsn=LSN{0/2CA13C8} ...]`, but this is no
+> longer available on the server. Reconfigure the connector to use a
+> snapshot mode when needed.
+
+Kafka Connect keeps each connector's progress in an internal Kafka topic
+(`_connect_offsets` here), which is a completely separate lifetime from both
+the connector and the Postgres slot. Deleting the connector does not clear
+it. So a clean-looking teardown leaves a stored LSN that the freshly created
+slot can't satisfy, and the next bootstrap fails *after* reporting success.
+
+The error message is genuinely good — it names the LSN and suggests the fix
+— but the remedy it hints at ("reconfigure to use a snapshot mode") is
+misleading here, because `snapshot.mode` was already `initial`; the mode
+isn't the problem, the stale offset is. The actual fix is the
+offsets API added in Kafka 3.6:
+
+```sh
+curl -X PUT    localhost:8083/connectors/NAME/stop
+curl -X DELETE localhost:8083/connectors/NAME/offsets
+curl -X PUT    localhost:8083/connectors/NAME/resume
+```
+
+Both scripts now handle it: teardown clears offsets before dropping the
+slot, and bootstrap detects this specific failure and self-heals rather than
+leaving a connector that says `RUNNING` and then quietly isn't. The broader
+lesson is that a CDC pipeline has state in three independent places —
+Postgres slot, Connect offsets, Kafka topics — and any teardown that forgets
+one of them produces a failure that surfaces on the *next* setup, far from
+its cause.
+
 ## What worked well
 
 - `supabase link` + `supabase db push` for cloud migrations was completely
@@ -186,3 +322,13 @@ confirming before relying on it.
   stack is a much better story than it sounds on paper — RLS policies are
   exactly the kind of thing that needs testing at the database level, and
   this makes that a one-command habit.
+- The local stack being *real* Postgres, with `wal_level = logical` already
+  set and the `postgres` role carrying `rolreplication`, meant pointing
+  Debezium at it took no configuration on the Supabase side at all — one
+  `create publication` and it worked. A lot of managed Postgres services
+  make this the hard part.
+- `supabase start` putting everything on a named Docker network
+  (`supabase_network_<project>`) makes an external stack trivial to attach:
+  declare the network as `external` in your own compose file and containers
+  reach the database as `supabase_db_<project>:5432`. No host networking, no
+  IP juggling.

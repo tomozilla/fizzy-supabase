@@ -1,0 +1,94 @@
+# OpenTelemetry Collector — collection and normalisation only.
+# It never writes to ClickHouse directly; Vector is the single writer.
+#
+# Local analogue of the hosted setup:
+#   hosted Metrics API (Prometheus scrape)  ->  postgresql receiver here
+#   hosted Log Drain (OTLP destination)     ->  otlp receiver here
+
+receivers:
+  # Your Next.js app points at localhost:4317/4318 and lands here.
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+        cors:
+          allowed_origins:
+            - http://localhost:3000
+            - http://localhost:3100
+
+  # Real Postgres metrics from the local Supabase database. The hosted
+  # equivalent is the Prometheus endpoint at
+  # https://<ref>.supabase.co/customer/v1/privileged/metrics, which is not
+  # available on a local/self-hosted stack — this receiver is the stand-in.
+  postgresql:
+    endpoint: supabase_db_fizzy-supabase:5432
+    transport: tcp
+    username: postgres
+    password: postgres
+    databases:
+      - postgres
+    collection_interval: 15s
+    tls:
+      insecure: true
+
+processors:
+  batch:
+    timeout: 2s
+    send_batch_size: 512
+
+  memory_limiter:
+    check_interval: 5s
+    limit_mib: 192
+    spike_limit_mib: 48
+
+  resource:
+    attributes:
+      - key: deployment.environment
+        value: local
+        action: upsert
+
+exporters:
+  # Logs and metrics ride one OTLP link. Vector's `opentelemetry` source
+  # splits them into otlp.logs and otlp.metrics on the other side.
+  # (`otlphttp` is the deprecated alias for this exporter; `otlp_http` is the
+  # current name and silences a startup warning on 0.160+.)
+  otlp_http/vector:
+    endpoint: http://vector:5318
+    tls:
+      insecure: true
+
+  # Traces take a different door. Vector's `clickhouse` sink only accepts log
+  # events, and its OTLP source emits traces as a distinct trace type that the
+  # sink silently discards. Sending OTLP/JSON to a plain HTTP endpoint makes
+  # Vector treat each request as a log event we can unroll into spans.
+  otlp_http/vector_traces:
+    endpoint: http://vector:5344
+    encoding: json
+    compression: none
+    tls:
+      insecure: true
+
+  # Not wired into any pipeline. Add it to a pipeline's `exporters` list to
+  # dump that signal to the container log when something looks wrong.
+  debug:
+    verbosity: basic
+
+service:
+  telemetry:
+    logs:
+      level: info
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, resource, batch]
+      exporters: [otlp_http/vector_traces]
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter, resource, batch]
+      exporters: [otlp_http/vector]
+    metrics:
+      receivers: [otlp, postgresql]
+      processors: [memory_limiter, resource, batch]
+      exporters: [otlp_http/vector]

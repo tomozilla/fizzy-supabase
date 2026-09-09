@@ -1,0 +1,36 @@
+{
+  "name": "fizzy-postgres",
+  "config": {
+    "connector.class": "io.debezium.connector.postgresql.PostgresConnector",
+
+    "database.hostname": "supabase_db_fizzy-supabase",
+    "database.port": "5432",
+    "database.user": "postgres",
+    "database.password": "postgres",
+    "database.dbname": "postgres",
+
+    "topic.prefix": "fizzy",
+    "schema.include.list": "public",
+    "table.include.list": "public.cards,public.comments,public.boards,public.columns,public.events",
+
+    "plugin.name": "pgoutput",
+    "publication.name": "dbz_fizzy",
+    "publication.autocreate.mode": "disabled",
+    "slot.name": "dbz_fizzy",
+
+    "snapshot.mode": "initial",
+    "tombstones.on.delete": "false",
+    "decimal.handling.mode": "string",
+    "time.precision.mode": "connect",
+
+    "topic.creation.enable": "true",
+    "topic.creation.default.replication.factor": "1",
+    "topic.creation.default.partitions": "1",
+    "topic.creation.default.cleanup.policy": "delete",
+    "topic.creation.default.retention.ms": "604800000",
+
+    "heartbeat.interval.ms": "10000",
+    "max.batch.size": "512",
+    "max.queue.size": "2048"
+  }
+}

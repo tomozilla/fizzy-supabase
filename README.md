@@ -21,6 +21,10 @@ Rails application.
 - 📊 **Feature comparison:** [`docs/comparison.md`](docs/comparison.md) —
   Database/multi-tenancy, Auth, Storage, Realtime, and Edge Functions,
   with diagrams
+- 🏗️ **Infrastructure:** [`docs/infrastructure.md`](docs/infrastructure.md) —
+  production and local architecture, plus an optional local CDC +
+  observability stack (Debezium → Kafka → ClickHouse, OpenTelemetry →
+  Vector → ClickHouse)
 - 📝 **Build notes:** [`FRICTION_LOG.md`](FRICTION_LOG.md) — issues hit
   while building this, and what worked well
 - ✅ **Testing:** [`docs/testing.md`](docs/testing.md) — unit (Vitest),
