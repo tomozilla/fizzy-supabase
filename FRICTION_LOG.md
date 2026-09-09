@@ -1,8 +1,9 @@
-# Friction log — fizzy-supabase dogfooding project
+# Build notes / friction log
 
-Concrete issues hit while building, in the order encountered. Each entry is
-something that actually happened during this session, not a guess at what
-might go wrong.
+Notes to myself on concrete issues hit while building this as a Supabase
+learning project, in the order encountered. Each entry is something that
+actually happened, not a guess at what might go wrong — kept here mostly so
+future-me remembers why a piece of code looks the way it does.
 
 ## 1. Free-tier project cap (2 active projects) has no advance warning
 
@@ -11,14 +12,13 @@ Creating a second Supabase cloud project failed outright:
 > "The following organization members have reached their maximum limits for
 > the number of active free projects... (2 project limit)."
 
-This is a reasonable limit, but as a brand-new CSA account there was
-already a pre-provisioned, empty "tomozilla's Project" (a default
-onboarding template with 0 rows in every table) silently occupying one of
-the two slots before I'd created anything myself. Nothing surfaced that
-limit, or that a project already existed, until the `create_project` call
-failed. A heads-up at account creation time ("You have N/2 free projects
-used, here's what they are") would have saved a failed API call and a
-"wait, what's already in my org?" detour.
+This is a reasonable limit, but on this brand-new account there was already
+a pre-provisioned, empty default project (0 rows in every table) silently
+occupying one of the two slots before I'd created anything myself. Nothing
+surfaced that limit, or that a project already existed, until the
+`create_project` call failed. A heads-up at account creation time ("You
+have N/2 free projects used, here's what they are") would have saved a
+failed API call and a "wait, what's already in my org?" detour.
 
 ## 2. Default privileges quietly re-grant EXECUTE to anon/authenticated
 
@@ -91,7 +91,7 @@ first page I wrote past the template's own examples.
    within the same session
 
 Testing RLS cross-account isolation requires two real users. The first
-signup worked; the second (`tomo.dogfood.test2@gmail.com`, requested only
+signup worked; the second (a throwaway test address, requested only
 seconds later) failed immediately with
 `{"code":429,"error_code":"over_email_send_rate_limit"}`.
 

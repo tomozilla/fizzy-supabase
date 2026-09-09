@@ -1,11 +1,92 @@
 # Fizzy (Rails) vs fizzy-supabase (Next.js + Supabase): feature-by-feature
 
 This compares how [Fizzy](https://github.com/basecamp/fizzy) — 37signals'
-production kanban app, MySQL/SQLite + Rails — implements each capability
-against how this dogfooding rebuild implements the equivalent using native
-Supabase features. Not a judgment of which is "better" — Fizzy is a mature,
-production system serving real customers, and this is a two-week learning
-project — but a look at where the two approaches genuinely differ in shape.
+kanban app, built on Rails + MySQL/SQLite — implements each capability
+against how this project (a personal learning exercise, not affiliated with
+37signals) implements the equivalent using native Supabase features. No
+Fizzy code was copied — only its publicly documented data model and feature
+set were used as a reference point. Not a judgment of which is "better" —
+Fizzy is a mature, production system serving real customers, and this is a
+small learning project — but a look at where the two approaches genuinely
+differ in shape.
+
+## At a glance
+
+| Capability | Fizzy (Rails) | fizzy-supabase (Next.js + Supabase) |
+|---|---|---|
+| Multi-tenancy | `Current.account` + URL-based middleware, enforced in Ruby | Row Level Security, enforced in Postgres |
+| Auth | Hand-rolled `Identity` / `MagicLink` / `Session` models | Supabase Auth (email/password) |
+| File storage | Rails Active Storage (disk in dev, S3 in prod) | Supabase Storage, tenant boundary encoded in object path |
+| Live updates | Turbo Streams over Solid Cable (broadcasts rendered HTML) | Realtime `postgres_changes` (broadcasts raw row data) |
+| Background/async work | Solid Queue jobs (`Notifier`, `Webhook::Delivery`) | A Deno Edge Function invoked directly from a server action |
+| Search | Sharded MySQL FTS **or** SQLite FTS5, two separate code paths | One native Postgres `tsvector` + GIN index |
+| Primary keys | UUIDv7, base36-encoded to 25 chars | Standard `uuid` (`gen_random_uuid()`) |
+
+## Architecture, side by side
+
+```mermaid
+flowchart TB
+    subgraph Fizzy["Fizzy (Rails)"]
+        direction TB
+        FUI["Views + Turbo/Stimulus"] --> FMW["AccountSlug::Extractor\n(sets Current.account)"]
+        FMW --> FModel["ActiveRecord models"]
+        FModel --> FDB[("MySQL / SQLite")]
+        FModel --> FJobs["Solid Queue jobs"]
+        FJobs --> FDB
+        FModel --> FStore["Active Storage"]
+        FModel -.Turbo Streams.-> FCable["Solid Cable"]
+        FCable -.broadcast HTML.-> FUI
+    end
+
+    subgraph FS["fizzy-supabase (Next.js + Supabase)"]
+        direction TB
+        NUI["React (Server + Client Components)"] --> NSA["Server Actions"]
+        NSA -->|"SQL, RLS-enforced"| NDB[("Postgres")]
+        NUI -.subscribe.-> NRT["Realtime"]
+        NRT -.raw row changes.-> NUI
+        NRT --- NDB
+        NSA --> NStore["Storage"]
+        NSA -->|invoke| NFn["Edge Function\n(parse-mentions)"]
+        NFn -->|service-role| NDB
+        NUI --> NAuth["Auth"]
+        NAuth --- NDB
+    end
+```
+
+The key structural difference: Fizzy's diagram has a Ruby layer sitting
+*between* every request and the database, doing enforcement and rendering.
+fizzy-supabase's diagram has the database itself doing enforcement (RLS),
+with a much thinner server-action layer that mostly just calls Postgres
+directly.
+
+## Data model
+
+```mermaid
+erDiagram
+    ACCOUNTS ||--o{ ACCOUNT_USERS : has
+    PROFILES ||--o{ ACCOUNT_USERS : "member of"
+    ACCOUNTS ||--o{ BOARDS : owns
+    BOARDS ||--o{ COLUMNS : has
+    BOARDS ||--o{ CARDS : has
+    COLUMNS ||--o{ CARDS : contains
+    CARDS ||--o{ COMMENTS : has
+    CARDS ||--o{ TAGGINGS : has
+    CARDS ||--o{ ASSIGNMENTS : has
+    CARDS ||--o{ WATCHES : has
+    CARDS ||--o{ PINS : has
+    CARDS ||--o{ ATTACHMENTS : has
+    COMMENTS ||--o{ REACTIONS : has
+    COMMENTS ||--o{ MENTIONS : has
+    ACCOUNTS ||--o{ TAGS : defines
+    TAGS ||--o{ TAGGINGS : "used in"
+    ACCOUNTS ||--o{ EVENTS : logs
+    EVENTS ||--o{ NOTIFICATIONS : "fans out to"
+    PROFILES ||--o{ NOTIFICATIONS : receives
+```
+
+Every box descending from `ACCOUNTS` carries an `account_id` column, and
+every one of them has an RLS policy gated on `is_account_member(account_id)`
+— this is the mechanism behind row 1 of the table above.
 
 ## 1. Database & multi-tenancy
 
@@ -35,7 +116,7 @@ respect `Current.account`.
 just works; querying as `postgres`/service-role in Supabase Studio bypasses
 RLS entirely, so verifying "does this policy actually restrict what I think
 it restricts" requires deliberately testing as the `authenticated` role
-(see the friction log — this is exactly the kind of thing that's easy to
+(see the build notes — this is exactly the kind of thing that's easy to
 get subtly wrong and hard to notice, since a wrong-but-permissive policy
 still looks like it works from the SQL editor).
 
@@ -59,10 +140,10 @@ email verification, or session/token handling at all is a large amount of
 undifferentiated code Fizzy carries that this project simply doesn't have.
 
 **Where Fizzy's approach wins:** magic-link *codes* shown directly on the
-page in development (see `docs/development.md`) — zero setup, no email
-service needed even for auth. Supabase's local stack gets you the same via
-Mailpit, but that's a second thing to know about, not the zero-config
-default of "the code is right there on the screen."
+page in development — zero setup, no email service needed even for auth.
+Supabase's local stack gets you the same via Mailpit, but that's a second
+thing to know about, not the zero-config default of "the code is right
+there on the screen."
 
 ## 3. Storage
 
@@ -100,6 +181,19 @@ client subscribes with `postgres_changes` and merges raw row payloads into
 React state. This is push-based *data*, not HTML — the client owns
 rendering.
 
+```mermaid
+sequenceDiagram
+    participant A as Browser A (viewing board)
+    participant DB as Postgres
+    participant RT as Realtime
+    participant B as Browser B (moves a card)
+
+    B->>DB: UPDATE cards SET column_id = ... (via Server Action)
+    DB-->>RT: WAL change event
+    RT-->>A: postgres_changes payload (raw row)
+    A->>A: merge into React state, re-render
+```
+
 **Where Supabase's model is simpler:** one `alter publication ... add
 table` per table, versus writing a broadcast concern + a Turbo Stream
 partial per view that needs to update live.
@@ -120,11 +214,29 @@ that ships with Rails 8 and stays in the same process/deploy as the app.
 
 **fizzy-supabase:** `supabase/functions/parse-mentions` is a separate Deno
 runtime, deployed independently of the Next.js app, invoked directly from a
-server action after a comment is created. It re-validates the client's
-mention list against real account membership (never trusting the client),
-then writes `mentions` + `notifications` rows using the service-role key —
-the one place in this project that deliberately steps outside RLS, because
-the function itself *is* the trusted boundary.
+server action after a comment is created.
+
+```mermaid
+sequenceDiagram
+    participant U as User
+    participant SA as Server Action
+    participant Fn as Edge Function (parse-mentions)
+    participant DB as Postgres
+
+    U->>SA: submit comment with "@name"
+    SA->>DB: INSERT comment
+    SA->>SA: resolve "@name" to a candidate user id
+    SA->>Fn: invoke(comment_id, mentioned_user_ids)
+    Fn->>DB: is candidate actually an account member?
+    DB-->>Fn: confirmed member ids only
+    Fn->>DB: INSERT mentions, events, notifications
+```
+
+It re-validates the client's mention list against real account membership
+(never trusting the client), then writes `mentions` + `notifications` rows
+using the service-role key — the one place in this project that
+deliberately steps outside RLS, because the function itself *is* the
+trusted boundary.
 
 **Friction:** there's no built-in retry/backoff or delivery-tracking for a
 direct `functions.invoke()` call the way Solid Queue gives you for free —
