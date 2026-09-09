@@ -59,6 +59,30 @@ async function BoardPageContent({
     .select("card_id")
     .eq("user_id", auth?.user?.id ?? "");
 
+  // Activity spikes (Fizzy's Card::ActivitySpike::Detector): cards that have
+  // taken an unusual amount of traffic in the last day get flagged so a
+  // sudden argument or scramble doesn't go unnoticed. Fizzy does statistical
+  // detection against a card's own baseline; this is the simple version —
+  // a plain threshold over a 24h window.
+  const SPIKE_WINDOW_HOURS = 24;
+  const SPIKE_THRESHOLD = 5;
+  const since = new Date(Date.now() - SPIKE_WINDOW_HOURS * 60 * 60 * 1000).toISOString();
+
+  const { data: recentEvents } = await supabase
+    .from("events")
+    .select("card_id")
+    .eq("board_id", boardId)
+    .gte("created_at", since);
+
+  const eventCounts = new Map<string, number>();
+  for (const e of recentEvents ?? []) {
+    if (!e.card_id) continue;
+    eventCounts.set(e.card_id, (eventCounts.get(e.card_id) ?? 0) + 1);
+  }
+  const spikingIds = [...eventCounts.entries()]
+    .filter(([, count]) => count >= SPIKE_THRESHOLD)
+    .map(([cardId]) => cardId);
+
   const pinnedIds = new Set((pins ?? []).map((p) => p.card_id));
   const now = Date.now();
 
@@ -113,6 +137,7 @@ async function BoardPageContent({
         initialColumns={columns ?? []}
         initialCards={visibleCards}
         pinnedCardIds={[...pinnedIds]}
+        spikingCardIds={spikingIds}
       />
     </div>
   );

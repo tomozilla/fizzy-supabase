@@ -1,6 +1,7 @@
 import { Suspense } from "react";
 import Link from "next/link";
 import { createClient } from "@/lib/supabase/server";
+import { ensurePersonalAccount, saveFilter, deleteFilter } from "@/app/actions";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -29,7 +30,13 @@ async function SearchContent({
   const sp = await searchParams;
   const query = typeof sp.q === "string" ? sp.q.trim() : "";
 
+  const accountId = await ensurePersonalAccount();
   const supabase = await createClient();
+
+  const { data: savedFilters } = await supabase
+    .from("filters")
+    .select("id, name, query")
+    .order("created_at", { ascending: false });
 
   const [cardResults, commentResults] = query
     ? await Promise.all([
@@ -68,6 +75,58 @@ async function SearchContent({
         />
         <Button type="submit">Search</Button>
       </form>
+
+      {/* Saved searches — Fizzy's Filter model, scoped per user by RLS. */}
+      <section className="flex flex-col gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          {(savedFilters ?? []).map((f) => (
+            <span
+              key={f.id}
+              data-testid={`filter-${f.id}`}
+              className="inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs"
+            >
+              <Link href={`/search?q=${encodeURIComponent(f.query)}`} className="hover:text-primary">
+                {f.name}
+              </Link>
+              <form
+                action={async () => {
+                  "use server";
+                  await deleteFilter(f.id);
+                }}
+              >
+                <button
+                  type="submit"
+                  aria-label={`Delete saved search "${f.name}"`}
+                  className="text-muted-foreground hover:text-destructive"
+                >
+                  ✕
+                </button>
+              </form>
+            </span>
+          ))}
+        </div>
+
+        {query && (
+          <form
+            action={async (formData: FormData) => {
+              "use server";
+              const name = String(formData.get("name") ?? "").trim() || query;
+              await saveFilter(accountId, name, query);
+            }}
+            className="flex gap-2"
+          >
+            <Input
+              name="name"
+              placeholder={`Name this search (default: "${query}")`}
+              aria-label="Name for this saved search"
+              className="max-w-[280px] h-8 text-sm"
+            />
+            <Button type="submit" size="sm" variant="outline">
+              Save search
+            </Button>
+          </form>
+        )}
+      </section>
 
       {query && (
         <>

@@ -24,7 +24,7 @@ Deno.serve(async (req) => {
 
     const { data: comment, error: commentError } = await supabase
       .from("comments")
-      .select("id, account_id, card_id, author_id")
+      .select("id, account_id, card_id, author_id, cards(board_id)")
       .eq("id", comment_id)
       .single();
 
@@ -66,6 +66,9 @@ Deno.serve(async (req) => {
       .from("events")
       .insert({
         account_id: comment.account_id,
+        // Include board_id so the notification inbox can link straight to
+        // the card (a comment event without it renders as dead text).
+        board_id: (comment.cards as { board_id: string } | null)?.board_id ?? null,
         card_id: comment.card_id,
         actor_id: comment.author_id,
         kind: "comment.mentioned",

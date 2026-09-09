@@ -43,10 +43,12 @@ function SortableCard({
   card,
   boardId,
   pinned,
+  spiking,
 }: {
   card: Card;
   boardId: string;
   pinned: boolean;
+  spiking: boolean;
 }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: card.id,
@@ -92,6 +94,7 @@ function SortableCard({
         <span className="flex items-center gap-0.5 text-xs shrink-0">
           {card.golden_at && <span title="Golden card">⭐</span>}
           {pinned && <span title="Pinned">📌</span>}
+          {spiking && <span title="Unusual recent activity">🔥</span>}
           {postponed && <span title="Postponed">💤</span>}
         </span>
       </UiCard>
@@ -104,12 +107,14 @@ function ColumnDropZone({
   cards,
   boardId,
   pinnedCardIds,
+  spikingCardIds,
   children,
 }: {
   column: Column;
   cards: Card[];
   boardId: string;
   pinnedCardIds: Set<string>;
+  spikingCardIds: Set<string>;
   children: React.ReactNode;
 }) {
   const { setNodeRef } = useDroppable({ id: column.id });
@@ -136,6 +141,7 @@ function ColumnDropZone({
               card={card}
               boardId={boardId}
               pinned={pinnedCardIds.has(card.id)}
+              spiking={spikingCardIds.has(card.id)}
             />
           ))}
         </ul>
@@ -151,15 +157,18 @@ export function BoardView({
   initialColumns,
   initialCards,
   pinnedCardIds = [],
+  spikingCardIds = [],
 }: {
   board: { id: string; name: string; account_id: string };
   initialColumns: Column[];
   initialCards: Card[];
   pinnedCardIds?: string[];
+  spikingCardIds?: string[];
 }) {
   const [columns, setColumns] = useState(initialColumns);
   const [cards, setCards] = useState(initialCards);
   const pinnedSet = useMemo(() => new Set(pinnedCardIds), [pinnedCardIds]);
+  const spikingSet = useMemo(() => new Set(spikingCardIds), [spikingCardIds]);
   const [, startTransition] = useTransition();
   const router = useRouter();
 
@@ -325,6 +334,7 @@ export function BoardView({
                 cards={cardsByColumn[column.id] ?? []}
                 boardId={board.id}
                 pinnedCardIds={pinnedSet}
+                spikingCardIds={spikingSet}
               >
                 <form
                   action={async (formData: FormData) => {

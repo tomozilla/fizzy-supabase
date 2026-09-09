@@ -6,7 +6,7 @@
 -- project earlier (role-simulation + a real REST API round trip) — codified
 -- here so it's checked on every change instead of by hand.
 begin;
-select plan(15);
+select plan(17);
 
 -- Two users, two accounts, entirely as postgres (bypasses RLS) — this is
 -- the fixture data every test below runs against.
@@ -229,6 +229,45 @@ select is(
      where id = 'ff111111-1111-1111-1111-111111111111')::int,
   0,
   'Bob cannot see webhooks configured on Alice''s account'
+);
+
+-- ── Webhook delivery fires on activity ──────────────────────────────────
+-- The webhook row above belongs to Alice's account. Inserting an event in
+-- that account should queue a delivery attempt (the HTTP call itself is
+-- async via pg_net; what's assertable synchronously is the audit row).
+reset role;
+insert into public.events (id, account_id, board_id, card_id, actor_id, kind)
+values (
+  'bb111111-1111-1111-1111-111111111111',
+  'a1111111-1111-1111-1111-111111111111',
+  'b1111111-1111-1111-1111-111111111111',
+  'd1111111-1111-1111-1111-111111111111',
+  '11111111-1111-1111-1111-111111111111',
+  'card.created'
+);
+
+select is(
+  (select count(*) from public.webhook_deliveries
+     where event_id = 'bb111111-1111-1111-1111-111111111111'
+       and webhook_id = 'ff111111-1111-1111-1111-111111111111')::int,
+  1,
+  'An event in the account queues a delivery for its registered webhook'
+);
+
+-- Bob's account has no webhooks, so an event there queues nothing.
+insert into public.events (id, account_id, actor_id, kind)
+values (
+  'bb222222-2222-2222-2222-222222222222',
+  'a2222222-2222-2222-2222-222222222222',
+  '22222222-2222-2222-2222-222222222222',
+  'card.created'
+);
+
+select is(
+  (select count(*) from public.webhook_deliveries
+     where event_id = 'bb222222-2222-2222-2222-222222222222')::int,
+  0,
+  'An event in an account with no webhooks queues no deliveries'
 );
 
 select * from finish();

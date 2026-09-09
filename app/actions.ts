@@ -220,6 +220,10 @@ export async function addComment(cardId: string, boardId: string, body: string) 
 
   await supabase.from("events").insert({
     account_id: card.account_id,
+    // board_id matters: without it the event can't be linked back to a board
+    // in the notification inbox, and board-scoped queries (like activity
+    // spike detection) skip it entirely.
+    board_id: boardId,
     card_id: cardId,
     actor_id: auth?.user?.id,
     kind: "comment.created",
@@ -483,6 +487,117 @@ export async function deleteWebhook(webhookId: string) {
   const { error } = await supabase.from("webhooks").delete().eq("id", webhookId);
   if (error) throw new Error(error.message);
   revalidatePath("/settings");
+}
+
+// ── Import (counterpart to /api/export) ───────────────────────────────────
+type ExportPayload = {
+  format_version?: number;
+  boards?: { id: string; name: string; description: string | null }[];
+  columns?: { id: string; board_id: string; name: string; position: number }[];
+  cards?: {
+    id: string;
+    board_id: string;
+    column_id: string;
+    title: string;
+    description: string | null;
+    position: number;
+  }[];
+  comments?: { id: string; card_id: string; body: string }[];
+  steps?: { id: string; card_id: string; title: string; position: number }[];
+};
+
+/**
+ * Import a previously exported JSON file into an account. Ids are remapped
+ * rather than reused, so importing into the same workspace duplicates the
+ * boards instead of colliding with (or silently overwriting) the originals —
+ * Fizzy's Account::Import does the same id-remapping for the same reason.
+ */
+export async function importWorkspace(accountId: string, json: string) {
+  const supabase = await createClient();
+  const { data: auth } = await supabase.auth.getUser();
+
+  let payload: ExportPayload;
+  try {
+    payload = JSON.parse(json);
+  } catch {
+    throw new Error("That file isn't valid JSON.");
+  }
+  if (!payload.boards) throw new Error("That doesn't look like a fizzy-supabase export.");
+
+  const boardIds = new Map<string, string>();
+  const columnIds = new Map<string, string>();
+  const cardIds = new Map<string, string>();
+
+  for (const board of payload.boards) {
+    const newId = crypto.randomUUID();
+    boardIds.set(board.id, newId);
+    const { error } = await supabase.from("boards").insert({
+      id: newId,
+      account_id: accountId,
+      name: board.name,
+      description: board.description,
+      created_by: auth?.user?.id,
+    });
+    if (error) throw new Error(error.message);
+  }
+
+  for (const column of payload.columns ?? []) {
+    const boardId = boardIds.get(column.board_id);
+    if (!boardId) continue;
+    const newId = crypto.randomUUID();
+    columnIds.set(column.id, newId);
+    await supabase.from("columns").insert({
+      id: newId,
+      board_id: boardId,
+      account_id: accountId,
+      name: column.name,
+      position: column.position,
+    });
+  }
+
+  for (const card of payload.cards ?? []) {
+    const boardId = boardIds.get(card.board_id);
+    const columnId = columnIds.get(card.column_id);
+    if (!boardId || !columnId) continue;
+    const newId = crypto.randomUUID();
+    cardIds.set(card.id, newId);
+    await supabase.from("cards").insert({
+      id: newId,
+      board_id: boardId,
+      column_id: columnId,
+      account_id: accountId,
+      title: card.title,
+      description: card.description,
+      position: card.position,
+      created_by: auth?.user?.id,
+      // Imported cards arrive already-triaged: they're not new arrivals
+      // needing a decision, they're history being restored.
+      triaged_at: new Date().toISOString(),
+    });
+  }
+
+  const comments = (payload.comments ?? [])
+    .map((c) => ({
+      card_id: cardIds.get(c.card_id),
+      account_id: accountId,
+      author_id: auth?.user?.id,
+      body: c.body,
+    }))
+    .filter((c) => c.card_id);
+  if (comments.length > 0) await supabase.from("comments").insert(comments);
+
+  const steps = (payload.steps ?? [])
+    .map((s) => ({
+      card_id: cardIds.get(s.card_id),
+      account_id: accountId,
+      title: s.title,
+      position: s.position,
+    }))
+    .filter((s) => s.card_id);
+  if (steps.length > 0) await supabase.from("steps").insert(steps);
+
+  revalidatePath("/boards");
+  return { boards: boardIds.size, cards: cardIds.size };
 }
 
 // ── Notifications ─────────────────────────────────────────────────────────

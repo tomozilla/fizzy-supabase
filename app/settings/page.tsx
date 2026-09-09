@@ -14,6 +14,7 @@ import { Input } from "@/components/ui/input";
 import { Card } from "@/components/ui/card";
 import { AvatarUploader } from "@/components/avatar-uploader";
 import { CopyableCode } from "@/components/copyable-code";
+import { WorkspaceImporter } from "@/components/workspace-importer";
 
 // Combines what Fizzy splits across account admin, user settings and the
 // webhooks screen: your profile, then one block per workspace you belong to
@@ -93,11 +94,12 @@ async function SettingsContent() {
         </Suspense>
       ))}
 
-      <section className="flex flex-col gap-2">
+      <section className="flex flex-col gap-3">
         <h2 className="font-semibold">Your data</h2>
         <p className="text-sm text-muted-foreground">
           Export everything you can see as JSON — boards, columns, cards,
-          comments, tags and checklists.
+          comments, tags and checklists. Importing creates fresh copies rather
+          than overwriting, so a re-import duplicates rather than clobbers.
         </p>
         <div>
           <Button asChild size="sm" variant="outline">
@@ -106,6 +108,7 @@ async function SettingsContent() {
             </a>
           </Button>
         </div>
+        <WorkspaceImporter accountId={personalAccountId} />
       </section>
     </div>
   );
